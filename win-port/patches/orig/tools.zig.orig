@@ -19,7 +19,6 @@
 const std = @import("std");
 const lp = @import("lightpanda");
 const zenai = @import("zenai");
-const builtin = @import("builtin");
 
 const NodeRegistry = @import("../NodeRegistry.zig");
 
@@ -1211,30 +1210,10 @@ fn joinEngines(comptime field: enum { tag, env_var }, comptime last_sep: []const
 /// the keyless clause is the one part not generated from the table.
 pub const search_cascade_prose = "tries " ++ joinEngines(.tag, ", then ") ++ " in order, each when its API key (" ++ joinEngines(.env_var, " or ") ++ ") is set; keenable also works without a key through its public endpoint (rate-limited per client IP)";
 
-/// getPosix for Windows: std's getWindows takes a WTF-16
-/// key and returns a WTF-16 value, so the key is built on
-/// the stack and the value is transcoded to a null-
-/// terminated UTF-8 string. The copy is intentionally kept:
-/// it backs a string that lives as long as the process
-/// environment it was read from, matching getPosix, which
-/// returns pointers into the global environ on POSIX.
-fn envGet(environ: std.process.Environ, key: []const u8) ?[:0]const u8 {
-    if (comptime builtin.os.tag == .windows) {
-        if (key.len == 0 or key.len >= 2048) return null;
-        var wkey: [2048]u16 = undefined;
-        for (key, 0..) |c, i| wkey[i] = c;
-        wkey[key.len] = 0;
-        const wkey_z: [:0]u16 = wkey[0..key.len :0];
-        const wvalue = environ.getWindows(wkey_z.ptr) orelse return null;
-        return std.unicode.utf16LeToUtf8AllocZ(std.heap.page_allocator, wvalue) catch return null;
-    }
-    return environ.getPosix(key);
-}
-
 /// The key `engine` uses right now; `null` selects a keyless engine's
 /// public endpoint.
 fn engineKey(comptime engine: anytype) error{MissingApiKey}!?[]const u8 {
-    if (envGet(lp.environ(), engine.env_var)) |key| return key;
+    if (lp.environ().getPosix(engine.env_var)) |key| return key;
     return if (comptime isKeyless(engine.Client)) null else error.MissingApiKey;
 }
 

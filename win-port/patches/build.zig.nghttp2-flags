@@ -1,3 +1,14 @@
+// ============================================================================
+// PATCH ARCHIVE (Windows port, task T1a)
+// Source file : D:\lightpanda-win\browser\build.zig
+// Function    : buildNghttp2 - C dependency compile flags
+// Change      : on Windows targets (target.result.os.tag == .windows) the
+//               flags array keeps only -DNGHTTP2_STATICLIB and -DHAVE_TIME_H;
+//               -DHAVE_ARPA_INET_H and -DHAVE_NETINET_IN_H are dropped because
+//               mingw has no arpa/inet.h / netinet/in.h. nghttp2_net.h's
+//               #ifdef WIN32 branch (lines 42-50) provides _byteswap_* based
+//               htonl/htons/ntohl/ntohs instead.
+// ============================================================================
 // Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
 //
 // Francis Bouvier <francis@lightpanda.io>

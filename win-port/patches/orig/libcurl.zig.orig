@@ -29,7 +29,7 @@ pub const CurlCode = c.CURLcode;
 pub const CurlSList = c.curl_slist;
 pub const CurlHeader = c.curl_header;
 pub const CurlSocket = c.curl_socket_t;
-pub const CurlOffT = c.curl_off_t;
+const CurlOffT = c.curl_off_t;
 
 pub const CURLE = struct {
     pub const OK = c.CURLE_OK;

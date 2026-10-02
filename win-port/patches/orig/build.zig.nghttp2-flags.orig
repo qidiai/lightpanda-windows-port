@@ -671,15 +671,12 @@ fn buildNghttp2(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.O
     lib.installHeadersDirectory(dep.path("lib/includes/nghttp2"), "nghttp2", .{});
     mod.addCSourceFiles(.{
         .root = dep.path("lib"),
-        .flags = if (target.result.os.tag == .windows)
-            &.{ "-DNGHTTP2_STATICLIB", "-DHAVE_TIME_H" }
-        else
-            &.{
-                "-DNGHTTP2_STATICLIB",
-                "-DHAVE_TIME_H",
-                "-DHAVE_ARPA_INET_H",
-                "-DHAVE_NETINET_IN_H",
-            },
+        .flags = &.{
+            "-DNGHTTP2_STATICLIB",
+            "-DHAVE_TIME_H",
+            "-DHAVE_ARPA_INET_H",
+            "-DHAVE_NETINET_IN_H",
+        },
         .files = &.{
             "sfparse.c",                 "nghttp2_alpn.c",   "nghttp2_buf.c",
             "nghttp2_callbacks.c",       "nghttp2_debug.c",  "nghttp2_extpri.c",

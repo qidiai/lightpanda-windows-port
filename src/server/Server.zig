@@ -52,6 +52,21 @@ const Server = @This();
 // fds the process needs beyond client connections and the HTTP client's
 const FD_HEADROOM = 128;
 
+// std.posix.setsockopt is a compileError on Windows; ws2_32's
+// setsockopt is not wrapped by std. SOCKET is an integer handle
+// (UINT_PTR), so it is passed by value.
+extern "ws2_32" fn setsockopt(
+    s: usize,
+    level: c_int,
+    optname: c_int,
+    optval: [*]const u8,
+    optlen: c_int,
+) c_int;
+
+fn winSetsockopt(sock: posix.socket_t, level: i32, optname: u32, opt: []const u8) !void {
+    if (setsockopt(@intFromPtr(sock), level, @intCast(optname), opt.ptr, @intCast(opt.len)) != 0) return error.Unexpected;
+}
+
 // How much one readable websocket may pull in per loop iteration; sized so a
 // large driver message (Playwright sends ~400KB) takes a couple of turns
 // rather than dozens, without starving the other connections.
@@ -135,13 +150,24 @@ pub fn init(app: *App, address: sys_net.IpAddress) !*Server {
     const max_connections = fdBudget(config);
 
     const listener = blk: {
-        const flags = posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK;
+        const flags = if (comptime builtin.os.tag == .windows)
+            posix.SOCK.STREAM
+        else
+            posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK;
         const l = try sys_net.socket(sys_net.family(&address), flags, posix.IPPROTO.TCP);
         errdefer sys_net.close(l);
 
-        try posix.setsockopt(l, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+        if (comptime builtin.os.tag == .windows) {
+            try winSetsockopt(l, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+        } else {
+            try posix.setsockopt(l, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+        }
         if (@hasDecl(posix.TCP, "NODELAY")) {
-            try posix.setsockopt(l, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+            if (comptime builtin.os.tag == .windows) {
+                try winSetsockopt(l, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+            } else {
+                try posix.setsockopt(l, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+            }
         }
 
         const sa = sys_net.sockaddrFromAddress(&address);
@@ -326,7 +352,7 @@ fn accept(self: *Server, now: u64) !void {
     while (true) {
         var address: posix.sockaddr.storage = undefined;
         var address_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-        const socket = sys_net.accept(self.listener, @ptrCast(&address), &address_len, posix.SOCK.NONBLOCK) catch |err| {
+        const socket = sys_net.accept(self.listener, @ptrCast(&address), &address_len, if (comptime builtin.os.tag == .windows) 0 else posix.SOCK.NONBLOCK) catch |err| {
             switch (err) {
                 error.WouldBlock => break,
                 error.ConnectionAborted => {
@@ -374,6 +400,12 @@ fn accept(self: *Server, now: u64) !void {
 fn configureSocket(socket: posix.socket_t) void {
     setSocketOption(socket, posix.SOL.SOCKET, posix.SO.KEEPALIVE, @as(c_int, 1), "SO_KEEPALIVE");
 
+    if (comptime builtin.os.tag == .windows) {
+        // Windows has no TCP_KEEPIDLE/KEEPINTVL/KEEPCNT
+        // options; SO_KEEPALIVE above uses the OS
+        // defaults.
+        return;
+    }
     const idle_opt = switch (builtin.os.tag) {
         .macos, .ios => posix.TCP.KEEPALIVE,
         else => posix.TCP.KEEPIDLE,
@@ -388,9 +420,15 @@ fn configureSocket(socket: posix.socket_t) void {
 }
 
 fn setSocketOption(socket: posix.socket_t, level: i32, option: u32, value: anytype, comptime name: []const u8) void {
-    posix.setsockopt(socket, level, option, &std.mem.toBytes(value)) catch |err| {
-        log.warn(.serve, "setsockopt", .{ .err = err, .option = name });
-    };
+    if (comptime builtin.os.tag == .windows) {
+        winSetsockopt(socket, level, option, &std.mem.toBytes(value)) catch |err| {
+            log.warn(.serve, "setsockopt", .{ .err = err, .option = name });
+        };
+    } else {
+        posix.setsockopt(socket, level, option, &std.mem.toBytes(value)) catch |err| {
+            log.warn(.serve, "setsockopt", .{ .err = err, .option = name });
+        };
+    }
 }
 
 fn liveConnections(self: *const Server) usize {
@@ -838,6 +876,7 @@ fn nextDeadline(self: *const Server) ?u64 {
 fn fdBudget(config: *const Config) usize {
     const reserve: usize = @as(usize, config.httpMaxConcurrent()) + config.wsMaxConcurrent() + FD_HEADROOM;
     const soft: u64 = blk: {
+        if (comptime builtin.os.tag == .windows) break :blk 1024;
         const limit = posix.getrlimit(.NOFILE) catch |err| {
             log.warn(.serve, "getrlimit", .{ .err = err });
             break :blk 1024;
@@ -854,7 +893,80 @@ fn fdBudget(config: *const Config) usize {
 const IOEngine = switch (builtin.os.tag) {
     .linux => EPoll,
     .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => KQueue,
+    .windows => WindowsIO,
     else => unreachable,
+};
+
+/// Placeholder event loop for Windows: the epoll/kqueue engines have
+/// no equivalent there yet. init() fails so a Windows server refuses
+/// to start instead of silently running without event delivery.
+const WindowsIO = struct {
+    fn init() !WindowsIO {
+        return error.UnsupportedIOEngine;
+    }
+    fn deinit(self: *const WindowsIO) void {
+        _ = self;
+    }
+    fn stop(self: *const WindowsIO) void {
+        _ = self;
+    }
+    fn signal(self: *const WindowsIO) void {
+        _ = self;
+    }
+    fn monitorListener(self: *const WindowsIO, fd: posix.fd_t) !void {
+        _ = self;
+        _ = fd;
+        return error.UnsupportedIOEngine;
+    }
+    fn pauseListener(self: *const WindowsIO, fd: posix.fd_t) !void {
+        _ = self;
+        _ = fd;
+        return error.UnsupportedIOEngine;
+    }
+    pub fn monitorHTTP(self: *const WindowsIO, conn: *Connection) !void {
+        _ = self;
+        _ = conn;
+        return error.UnsupportedIOEngine;
+    }
+    fn monitorWebSocket(self: *const WindowsIO, worker: *Worker) !void {
+        _ = self;
+        _ = worker;
+        return error.UnsupportedIOEngine;
+    }
+    pub fn waitWritable(self: *const WindowsIO, conn: *Connection) !void {
+        _ = self;
+        _ = conn;
+        return error.UnsupportedIOEngine;
+    }
+    pub fn waitReadable(self: *const WindowsIO, conn: *Connection) !void {
+        _ = self;
+        _ = conn;
+        return error.UnsupportedIOEngine;
+    }
+    fn modify(self: *const WindowsIO, conn: *Connection, events: u32) !void {
+        _ = self;
+        _ = conn;
+        _ = events;
+        return error.UnsupportedIOEngine;
+    }
+    pub fn remove(self: *const WindowsIO, socket: posix.socket_t) void {
+        _ = self;
+        _ = socket;
+    }
+    fn wait(self: *WindowsIO, timeout_ms: ?u64) Iterator {
+        _ = self;
+        _ = timeout_ms;
+        return .{ .events = &.{} };
+    }
+
+    const Iterator = struct {
+        events: []const IOEvent = &.{},
+
+        fn next(self: *Iterator) ?IOEvent {
+            _ = self;
+            return null;
+        }
+    };
 };
 
 // Abstraction over an EPoll or KQueue event
