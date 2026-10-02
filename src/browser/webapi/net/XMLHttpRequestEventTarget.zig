@@ -1,0 +1,199 @@
+// Copyright (C) 2023-2025  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const lp = @import("lightpanda");
+const js = @import("../../js/js.zig");
+
+const EventTarget = @import("../EventTarget.zig");
+const ProgressEvent = @import("../event/ProgressEvent.zig");
+
+const Execution = js.Execution;
+
+const XMLHttpRequestEventTarget = @This();
+
+pub const Proto = EventTarget;
+
+_type: Type,
+_proto: *EventTarget,
+_on_abort: ?js.Function.Global = null,
+_on_error: ?js.Function.Global = null,
+_on_load: ?js.Function.Global = null,
+_on_load_end: ?js.Function.Global = null,
+_on_load_start: ?js.Function.Global = null,
+_on_progress: ?js.Function.Global = null,
+_on_timeout: ?js.Function.Global = null,
+
+pub const Type = union(enum) {
+    request: *@import("XMLHttpRequest.zig"),
+    upload: *@import("XMLHttpRequestUpload.zig"),
+};
+
+pub fn asEventTarget(self: *XMLHttpRequestEventTarget) *EventTarget {
+    return self._proto;
+}
+
+pub fn releaseListeners(self: *XMLHttpRequestEventTarget) void {
+    inline for (.{
+        "_on_abort",      "_on_error",    "_on_load",    "_on_load_end",
+        "_on_load_start", "_on_progress", "_on_timeout",
+    }) |field| {
+        if (@field(self, field)) |func| {
+            func.release();
+        }
+    }
+}
+
+pub fn dispatch(self: *XMLHttpRequestEventTarget, comptime event_type: DispatchType, progress_: ?Progress, exec: *const Execution) !void {
+    const field, const typ = comptime blk: {
+        break :blk switch (event_type) {
+            .abort => .{ "_on_abort", "abort" },
+            .err => .{ "_on_error", "error" },
+            .load => .{ "_on_load", "load" },
+            .load_end => .{ "_on_load_end", "loadend" },
+            .load_start => .{ "_on_load_start", "loadstart" },
+            .progress => .{ "_on_progress", "progress" },
+            .timeout => .{ "_on_timeout", "timeout" },
+        };
+    };
+
+    const progress = progress_ orelse Progress{};
+    const event = (try ProgressEvent.initTrusted(
+        comptime .wrap(typ),
+        .{
+            .total = progress.total,
+            .loaded = progress.loaded,
+            .lengthComputable = progress.length_computable,
+        },
+        exec.page,
+    )).asEvent();
+
+    return exec.dispatch(
+        self.asEventTarget(),
+        event,
+        @field(self, field),
+        .{ .context = "XHR " ++ typ },
+    );
+}
+
+// Resolves the property event handler for the given event type, so that a
+// script-dispatched event (target.dispatchEvent) fires it like the internal
+// dispatch path does.
+pub fn inlineHandler(self: *const XMLHttpRequestEventTarget, typ: lp.String) ?js.Function.Global {
+    if (typ.eql(comptime .wrap("abort"))) return self._on_abort;
+    if (typ.eql(comptime .wrap("error"))) return self._on_error;
+    if (typ.eql(comptime .wrap("load"))) return self._on_load;
+    if (typ.eql(comptime .wrap("loadend"))) return self._on_load_end;
+    if (typ.eql(comptime .wrap("loadstart"))) return self._on_load_start;
+    if (typ.eql(comptime .wrap("progress"))) return self._on_progress;
+    if (typ.eql(comptime .wrap("timeout"))) return self._on_timeout;
+    return null;
+}
+
+fn getOnAbort(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_abort;
+}
+
+fn setOnAbort(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_abort = cb;
+}
+
+fn getOnError(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_error;
+}
+
+fn setOnError(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_error = cb;
+}
+
+fn getOnLoad(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_load;
+}
+
+fn setOnLoad(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_load = cb;
+}
+
+fn getOnLoadEnd(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_load_end;
+}
+
+fn setOnLoadEnd(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_load_end = cb;
+}
+
+fn getOnLoadStart(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_load_start;
+}
+
+fn setOnLoadStart(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_load_start = cb;
+}
+
+fn getOnProgress(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_progress;
+}
+
+fn setOnProgress(self: *XMLHttpRequestEventTarget, cb: ?js.Function.Global) !void {
+    self._on_progress = cb;
+}
+
+fn getOnTimeout(self: *const XMLHttpRequestEventTarget) ?js.Function.Global {
+    return self._on_timeout;
+}
+
+fn setOnTimeout(self: *XMLHttpRequestEventTarget, cb_: ?js.Function) !void {
+    if (cb_) |cb| {
+        self._on_timeout = try cb.persistWithThis(self);
+    } else {
+        self._on_timeout = null;
+    }
+}
+
+const DispatchType = enum {
+    abort,
+    err,
+    load,
+    load_end,
+    load_start,
+    progress,
+    timeout,
+};
+
+const Progress = struct {
+    loaded: usize = 0,
+    total: usize = 0,
+    length_computable: bool = false,
+};
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(XMLHttpRequestEventTarget);
+
+    pub const Meta = struct {
+        pub const name = "XMLHttpRequestEventTarget";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    pub const onloadstart = bridge.accessor(XMLHttpRequestEventTarget.getOnLoadStart, XMLHttpRequestEventTarget.setOnLoadStart, .{});
+    pub const onprogress = bridge.accessor(XMLHttpRequestEventTarget.getOnProgress, XMLHttpRequestEventTarget.setOnProgress, .{});
+    pub const onabort = bridge.accessor(XMLHttpRequestEventTarget.getOnAbort, XMLHttpRequestEventTarget.setOnAbort, .{});
+    pub const onerror = bridge.accessor(XMLHttpRequestEventTarget.getOnError, XMLHttpRequestEventTarget.setOnError, .{});
+    pub const onload = bridge.accessor(XMLHttpRequestEventTarget.getOnLoad, XMLHttpRequestEventTarget.setOnLoad, .{});
+    pub const ontimeout = bridge.accessor(XMLHttpRequestEventTarget.getOnTimeout, XMLHttpRequestEventTarget.setOnTimeout, .{});
+    pub const onloadend = bridge.accessor(XMLHttpRequestEventTarget.getOnLoadEnd, XMLHttpRequestEventTarget.setOnLoadEnd, .{});
+};

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<script src="../testing.js"></script>
+
+<script id=OffscreenCanvas>
+{
+  const canvas = new OffscreenCanvas(256, 256);
+  testing.expectEqual(true, canvas instanceof OffscreenCanvas);
+  testing.expectEqual(canvas.width, 256);
+  testing.expectEqual(canvas.height, 256);
+}
+</script>
+
+<script id=OffscreenCanvas#width>
+{
+  const canvas = new OffscreenCanvas(100, 200);
+  testing.expectEqual(canvas.width, 100);
+  canvas.width = 300;
+  testing.expectEqual(canvas.width, 300);
+}
+</script>
+
+<script id=OffscreenCanvas#height>
+{
+  const canvas = new OffscreenCanvas(100, 200);
+  testing.expectEqual(canvas.height, 200);
+  canvas.height = 400;
+  testing.expectEqual(canvas.height, 400);
+}
+</script>
+
+<script id=OffscreenCanvas#getContext>
+{
+  const canvas = new OffscreenCanvas(64, 64);
+  const ctx = canvas.getContext("2d");
+  testing.expectEqual(true, ctx instanceof OffscreenCanvasRenderingContext2D);
+  // We can't really test rendering but let's try to call it at least.
+  ctx.fillRect(0, 0, 10, 10);
+
+  testing.expectEqual(canvas, ctx.canvas);
+  testing.expectEqual(64, ctx.canvas.width);
+  testing.expectEqual(ctx, canvas.getContext("2d"));
+  testing.expectEqual(null, canvas.getContext("webgl"));
+}
+</script>
+
+<script id=OffscreenCanvas#convertToBlob>
+{
+  const canvas = new OffscreenCanvas(64, 64);
+  const promise = canvas.convertToBlob();
+  testing.expectEqual(true, promise instanceof Promise);
+  // The same blank PNG as HTMLCanvasElement.toBlob.
+  promise.then(blob => {
+    testing.expectEqual(true, blob instanceof Blob);
+    testing.expectEqual('image/png', blob.type);
+    testing.expectEqual(67, blob.size);
+  });
+}
+</script>
+
+<script id=OffscreenCanvas#convertToBlob_zero_size_rejects>
+{
+  const canvas = new OffscreenCanvas(0, 64);
+  canvas.convertToBlob().then(
+    () => testing.expectEqual('rejected', 'resolved'),
+    (err) => testing.expectEqual('IndexSizeError', err.name),
+  );
+}
+</script>
+
+<script id=HTMLCanvasElement#transferControlToOffscreen>
+{
+  const htmlCanvas = document.createElement("canvas");
+  htmlCanvas.width = 128;
+  htmlCanvas.height = 96;
+  const offscreen = htmlCanvas.transferControlToOffscreen();
+  testing.expectEqual(true, offscreen instanceof OffscreenCanvas);
+  testing.expectEqual(offscreen.width, 128);
+  testing.expectEqual(offscreen.height, 96);
+}
+</script>
+
+<script id=OffscreenCanvasRenderingContext2D#getImageData>
+{
+  const canvas = new OffscreenCanvas(100, 50);
+  const ctx = canvas.getContext("2d");
+
+  const imageData = ctx.getImageData(0, 0, 10, 20);
+  testing.expectEqual(true, imageData instanceof ImageData);
+  testing.expectEqual(imageData.width, 10);
+  testing.expectEqual(imageData.height, 20);
+  testing.expectEqual(imageData.data.length, 10 * 20 * 4);
+
+  // Undrawn canvas should return transparent black pixels.
+  testing.expectEqual(imageData.data[0], 0);
+  testing.expectEqual(imageData.data[1], 0);
+  testing.expectEqual(imageData.data[2], 0);
+  testing.expectEqual(imageData.data[3], 0);
+
+  // Zero or negative dimensions should throw.
+  testing.expectError('Index or size', () => ctx.getImageData(0, 0, 0, 10));
+  testing.expectError('Index or size', () => ctx.getImageData(0, 0, 10, -5));
+}
+</script>
+
+<script id=OffscreenCanvasRenderingContext2D#measureText>
+{
+  const ctx = new OffscreenCanvas(10, 10).getContext("2d");
+  ctx.font = "16px sans-serif";
+  testing.expectEqual(48, ctx.measureText("hello").width);
+  ctx.setLineDash([1, 2]);
+  testing.expectEqual("1,2", ctx.getLineDash().join());
+  testing.expectEqual(true, ctx.createLinearGradient(0, 0, 1, 1) instanceof CanvasGradient);
+}
+</script>

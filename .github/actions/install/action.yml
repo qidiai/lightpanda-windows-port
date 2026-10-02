@@ -1,0 +1,80 @@
+name: "Deps install"
+description: "Install deps for the browser"
+
+inputs:
+  arch:
+    description: 'CPU arch used to select the v8 lib'
+    required: false
+    default: 'x86_64'
+  os:
+    description: 'OS used to select the v8 lib'
+    required: false
+    default: 'linux'
+  zig-v8:
+    description: 'zig v8 version to install'
+    required: false
+    default: 'v0.5.8'
+  v8:
+    description: 'v8 version to install'
+    required: false
+    default: '15.5.35.13'
+  cache-dir:
+    description: 'cache dir to use'
+    required: false
+    default: '~/.cache'
+  debug:
+    description: 'enable v8 pre-built debug version, only available for linux x86_64'
+    required: false
+    default: 'false'
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Install apt deps
+      if: ${{ inputs.os == 'linux' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget xz-utils ca-certificates clang make git
+
+    # Zig version used from the `minimum_zig_version` field in build.zig.zon
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+    # Zig 0.16 writes fetched .zip archives to <global cache>/tmp but no longer
+    # creates that directory, so zip dependencies (sqlite amalgamation) fail
+    # with "failed to create temporary zip file: FileNotFound" on the fresh
+    # cache dir setup-zig points ZIG_GLOBAL_CACHE_DIR at.
+    - name: Zig 0.16 zip-fetch workaround
+      shell: bash
+      run: mkdir -p "${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}/tmp"
+
+    # Rust Toolchain for src/rust (html5ever bridge, renderer)
+    - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      with:
+        toolchain: stable
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        workspaces: src/rust
+
+    - name: Cache v8
+      id: cache-v8
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      env:
+        cache-name: cache-v8
+      with:
+        path: ${{ inputs.cache-dir }}/v8
+        key: libc_v8_${{ inputs.v8 }}_${{ inputs.os }}_${{ inputs.arch }}_${{ inputs.zig-v8 }}${{inputs.debug == 'true' && '_debug' || '' }}.a
+
+    - if: ${{ steps.cache-v8.outputs.cache-hit != 'true' }}
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.cache-dir }}/v8
+
+        wget -O ${{ inputs.cache-dir }}/v8/libc_v8.a https://github.com/lightpanda-io/zig-v8-fork/releases/download/${{ inputs.zig-v8 }}/libc_v8_${{ inputs.v8 }}_${{ inputs.os }}_${{ inputs.arch }}${{inputs.debug == 'true' && '_debug' || '' }}.a
+
+    - name: install v8
+      shell: bash
+      run: |
+        mkdir -p v8
+        ln -s ${{ inputs.cache-dir }}/v8/libc_v8.a v8/libc_v8${{inputs.debug == 'true' && '_debug' || '' }}.a

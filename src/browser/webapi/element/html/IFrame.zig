@@ -1,0 +1,177 @@
+// Copyright (C) 2023-2025  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const lp = @import("lightpanda");
+const std = @import("std");
+
+const js = @import("../../../js/js.zig");
+const Factory = @import("../../../Factory.zig");
+const Frame = @import("../../../Frame.zig");
+
+const Node = @import("../../Node.zig");
+const Window = @import("../../Window.zig");
+const Element = @import("../../Element.zig");
+const Document = @import("../../Document.zig");
+const DOMTokenList = @import("../../collections.zig").DOMTokenList;
+
+const HtmlElement = @import("../Html.zig");
+
+const String = lp.String;
+const IFrame = @This();
+
+pub const Proto = HtmlElement;
+_proto_canary: if (lp.IS_DEBUG) *HtmlElement else void = undefined,
+_src: []const u8 = "",
+_executed: bool = false,
+_window: ?*Window = null,
+
+pub fn asElement(self: *IFrame) *Element {
+    return Factory.protoOf(self).asElement();
+}
+pub fn asNode(self: *IFrame) *Node {
+    return self.asElement().asNode();
+}
+
+fn getContentWindow(self: *const IFrame, frame: *Frame) ?Window.Access {
+    const frame_window = self._window orelse return null;
+    return Window.Access.init(frame.window, frame_window);
+}
+
+pub fn getContentDocument(self: *const IFrame) ?*Document {
+    const window = self._window orelse return null;
+    return window._document;
+}
+
+// loading=lazy iframes are still but don't delay the page's "load" event
+pub fn isLazyLoading(self: *IFrame) bool {
+    const loading = self.asElement().getAttributeInterned("loading") orelse return false;
+    return std.ascii.eqlIgnoreCase(loading, "lazy");
+}
+
+pub fn getSrc(self: *IFrame, frame: *Frame) ![]const u8 {
+    if (self._src.len == 0) return "";
+    return self.asNode().resolveURLReflect(self._src, frame, .{});
+}
+
+fn setSrc(self: *IFrame, src: []const u8, frame: *Frame) !void {
+    const element = self.asElement();
+    try element.setAttributeSafe(comptime .wrap("src"), .wrap(src), frame);
+    self._src = element.getAttributeInterned("src") orelse unreachable;
+    if (element.asNode().isConnected()) {
+        // unlike script, an iframe is reloaded every time the src is set
+        // even if it's set to the same URL.
+        self._executed = false;
+        try frame.iframeAddedCallback(self);
+    }
+}
+
+pub fn hasSrcdoc(self: *IFrame) bool {
+    return self.asElement().getAttributeSafe(comptime .wrap("srcdoc")) != null;
+}
+
+fn getSrcdoc(self: *IFrame) []const u8 {
+    return self.asElement().getAttributeSafe(comptime .wrap("srcdoc")) orelse "";
+}
+
+fn setSrcdoc(self: *IFrame, value: []const u8, frame: *Frame) !void {
+    // Build.attributeChange triggers the (re)navigation.
+    try self.asElement().setAttributeSafe(comptime .wrap("srcdoc"), .wrap(value), frame);
+}
+
+fn getSandbox(self: *IFrame, frame: *Frame) !?*DOMTokenList {
+    const element = self.asElement();
+    if (element._namespace != .html) {
+        return null;
+    }
+    return element.getTokenList(.sandbox, frame);
+}
+
+fn setSandbox(self: *IFrame, value: String, frame: *Frame) !void {
+    const list = try self.getSandbox(frame) orelse return;
+    return list.setValue(value, frame);
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(IFrame);
+
+    pub const Meta = struct {
+        pub const name = "HTMLIFrameElement";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    const reflect = Element.Reflect(IFrame);
+    pub const referrerPolicy = reflect.referrerPolicy();
+    pub const longDesc = reflect.url("longdesc");
+    pub const allowFullscreen = reflect.boolean("allowfullscreen");
+    pub const width = reflect.string("width");
+    pub const scrolling = reflect.string("scrolling");
+    pub const marginWidth = reflect.stringNullToEmpty("marginwidth");
+    pub const marginHeight = reflect.stringNullToEmpty("marginheight");
+    pub const height = reflect.string("height");
+    pub const frameBorder = reflect.string("frameborder");
+    pub const @"align" = reflect.string("align");
+
+    pub const src = bridge.accessor(IFrame.getSrc, IFrame.setSrc, .{ .ce_reactions = true });
+    pub const srcdoc = bridge.accessor(IFrame.getSrcdoc, IFrame.setSrcdoc, .{ .ce_reactions = true });
+    pub const name = reflect.string("name");
+    pub const contentWindow = bridge.accessor(IFrame.getContentWindow, null, .{});
+    pub const contentDocument = bridge.accessor(struct {
+        fn wrap(self: *const IFrame, frame: *Frame) ?*Document {
+            // specific JS implementation which is origin-aware.
+            const window = self._window orelse return null;
+            if (window._frame.js.origin != frame.js.origin) {
+                return null;
+            }
+            return window._document;
+        }
+    }.wrap, null, .{});
+    pub const sandbox = bridge.accessor(IFrame.getSandbox, IFrame.setSandbox, .{ .null_as_undefined = true, .ce_reactions = true });
+};
+
+pub const Build = struct {
+    pub fn complete(node: *Node, _: *Frame) !void {
+        const self = node.as(IFrame);
+        const element = self.asElement();
+        self._src = element.getAttributeInterned("src") orelse "";
+    }
+
+    pub fn attributeChange(element: *Element, name: String, _: String, frame: *Frame) !void {
+        if (!name.eql(comptime .wrap("srcdoc"))) {
+            return;
+        }
+        if (element.asNode().isConnected()) {
+            // like src, setting srcdoc reloads the frame even if the value didn't change
+            const self = element.as(IFrame);
+            self._executed = false;
+            try frame.iframeAddedCallback(self);
+        }
+    }
+
+    pub fn attributeRemove(element: *Element, name: String, frame: *Frame) !void {
+        if (!name.eql(comptime .wrap("srcdoc"))) {
+            return;
+        }
+        if (element.asNode().isConnected()) {
+            const self = element.as(IFrame);
+            // removing srcdoc falls back to src (or about:blank)
+            self._executed = false;
+            try frame.iframeAddedCallback(self);
+        }
+    }
+};

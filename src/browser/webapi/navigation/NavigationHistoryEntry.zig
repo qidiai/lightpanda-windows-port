@@ -1,0 +1,125 @@
+// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const URL = @import("../URL.zig");
+const NavigationState = @import("root.zig").NavigationState;
+const Event = @import("../Event.zig");
+const EventTarget = @import("../EventTarget.zig");
+const Frame = @import("../../Frame.zig");
+const js = @import("../../js/js.zig");
+
+const NavigationHistoryEntry = @This();
+
+pub const Proto = EventTarget;
+
+// https://developer.mozilla.org/en-US/docs/Web/API/NavigationHistoryEntry
+_proto: *EventTarget,
+_id: []const u8,
+_key: []const u8,
+_url: ?[:0]const u8,
+_state: NavigationState,
+
+_on_dispose: ?js.Function.Global = null,
+
+fn asEventTarget(self: *NavigationHistoryEntry) *EventTarget {
+    return self._proto;
+}
+
+pub fn id(self: *const NavigationHistoryEntry) []const u8 {
+    return self._id;
+}
+
+pub fn index(self: *const NavigationHistoryEntry, frame: *Frame) i32 {
+    const navigation = frame._session.navigation;
+
+    for (navigation._entries.items, 0..) |entry, i| {
+        if (std.mem.eql(u8, entry._id, self._id)) {
+            return @intCast(i);
+        }
+    }
+
+    return -1;
+}
+
+pub fn key(self: *const NavigationHistoryEntry) []const u8 {
+    return self._key;
+}
+
+fn sameDocument(self: *const NavigationHistoryEntry, frame: *Frame) bool {
+    const got_url = self._url orelse return false;
+    return URL.eqlDocument(got_url, frame.base());
+}
+
+pub fn url(self: *const NavigationHistoryEntry) ?[:0]const u8 {
+    return self._url;
+}
+
+const StateReturn = union(enum) { value: ?js.Value, undefined: void };
+
+pub fn getState(self: *const NavigationHistoryEntry, frame: *Frame) !StateReturn {
+    if (self._state.source == .navigation) {
+        if (self._state.value) |value| {
+            return .{ .value = try frame.js.local.?.parseJSON(value) };
+        }
+    }
+
+    return .undefined;
+}
+
+pub fn fireDispose(self: *NavigationHistoryEntry, frame: *Frame) !void {
+    if (!frame.hasDirectListeners(self.asEventTarget(), "dispose", self._on_dispose)) return;
+
+    const event = try Event.initTrusted(comptime .wrap("dispose"), .{}, frame.page);
+    try frame.dispatch(self.asEventTarget(), event, self._on_dispose, .{ .context = "NavigationHistoryEntry" });
+}
+
+fn getOnDispose(self: *const NavigationHistoryEntry) ?js.Function.Global {
+    return self._on_dispose;
+}
+
+fn setOnDispose(self: *NavigationHistoryEntry, cb_: ?js.Function) !void {
+    if (self._on_dispose) |od| od.release();
+    if (cb_) |cb| {
+        self._on_dispose = try cb.persistWithThis(self);
+    } else {
+        self._on_dispose = null;
+    }
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(NavigationHistoryEntry);
+
+    pub const Meta = struct {
+        pub const name = "NavigationHistoryEntry";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    pub const id = bridge.accessor(NavigationHistoryEntry.id, null, .{});
+    pub const index = bridge.accessor(NavigationHistoryEntry.index, null, .{});
+    pub const key = bridge.accessor(NavigationHistoryEntry.key, null, .{});
+    pub const sameDocument = bridge.accessor(NavigationHistoryEntry.sameDocument, null, .{});
+    pub const url = bridge.accessor(NavigationHistoryEntry.url, null, .{});
+    pub const getState = bridge.function(NavigationHistoryEntry.getState, .{});
+    pub const ondispose = bridge.accessor(
+        NavigationHistoryEntry.getOnDispose,
+        NavigationHistoryEntry.setOnDispose,
+        .{},
+    );
+};

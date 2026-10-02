@@ -1,0 +1,147 @@
+// Copyright (C) 2023-2025  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+const lp = @import("lightpanda");
+
+const js = @import("../../../js/js.zig");
+const Frame = @import("../../../Frame.zig");
+const Factory = @import("../../../Factory.zig");
+
+const Node = @import("../../Node.zig");
+const Element = @import("../../Element.zig");
+const Window = @import("../../Window.zig");
+const HtmlElement = @import("../Html.zig");
+
+const String = lp.String;
+
+const Body = @This();
+
+pub const Proto = HtmlElement;
+
+_pad: bool = false,
+_proto_canary: if (lp.IS_DEBUG) *HtmlElement else void = undefined,
+
+pub fn asElement(self: *Body) *Element {
+    return Factory.protoOf(self).asElement();
+}
+pub fn asNode(self: *Body) *Node {
+    return self.asElement().asNode();
+}
+
+// Special-case: the "window-reflecting body element event handler set"
+// (blur, error, focus, load, resize, scroll) are aliases for the Window's
+// event handlers.
+
+// The aliased Window is the one of the element's node document's frame — not
+// the caller's frame, which differs when a same-origin script reaches into
+// another frame (e.g. the parent setting iframeDoc.body.onblur).
+fn reflectedWindow(self: *Body, frame: *Frame) ?*Window {
+    return (self.asElement().ownerFrame(frame) orelse return null).window;
+}
+
+fn getOnBlur(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_blur;
+}
+fn setOnBlur(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_blur = Window.getFunctionFromSetter(setter);
+}
+
+fn getOnError(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_error;
+}
+fn setOnError(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_error = Window.getFunctionFromSetter(setter);
+}
+
+fn getOnFocus(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_focus;
+}
+fn setOnFocus(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_focus = Window.getFunctionFromSetter(setter);
+}
+
+fn getOnLoad(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_load;
+}
+fn setOnLoad(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_load = Window.getFunctionFromSetter(setter);
+}
+
+fn getOnResize(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_resize;
+}
+fn setOnResize(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_resize = Window.getFunctionFromSetter(setter);
+}
+
+fn getOnScroll(self: *Body, frame: *Frame) ?js.Function.Global {
+    return (self.reflectedWindow(frame) orelse return null)._on_scroll;
+}
+fn setOnScroll(self: *Body, setter: ?Window.FunctionSetter, frame: *Frame) !void {
+    (self.reflectedWindow(frame) orelse return)._on_scroll = Window.getFunctionFromSetter(setter);
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(Body);
+
+    pub const Meta = struct {
+        pub const name = "HTMLBodyElement";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    const reflect = Element.Reflect(Body);
+    pub const vLink = reflect.stringNullToEmpty("vlink");
+    pub const text = reflect.stringNullToEmpty("text");
+    pub const link = reflect.stringNullToEmpty("link");
+    pub const bgColor = reflect.stringNullToEmpty("bgcolor");
+    pub const background = reflect.string("background");
+    pub const aLink = reflect.stringNullToEmpty("alink");
+
+    pub const onblur = bridge.accessor(getOnBlur, setOnBlur, .{ .null_as_undefined = false });
+    pub const onerror = bridge.accessor(getOnError, setOnError, .{ .null_as_undefined = false });
+    pub const onfocus = bridge.accessor(getOnFocus, setOnFocus, .{ .null_as_undefined = false });
+    pub const onload = bridge.accessor(getOnLoad, setOnLoad, .{ .null_as_undefined = false });
+    pub const onresize = bridge.accessor(getOnResize, setOnResize, .{ .null_as_undefined = false });
+    pub const onscroll = bridge.accessor(getOnScroll, setOnScroll, .{ .null_as_undefined = false });
+};
+
+pub const Build = struct {
+    const window_reflecting_attributes = [_][]const u8{
+        "onblur", "onerror", "onfocus", "onload", "onresize", "onscroll",
+    };
+
+    pub fn complete(node: *Node, frame: *Frame) !void {
+        const el = node.as(Element);
+        const owner = node.ownerFrame(frame) orelse return;
+        inline for (window_reflecting_attributes) |attr| {
+            if (el.getAttributeSafe(comptime .wrap(attr))) |value| {
+                owner.window.setWindowReflectingHandlerFromAttribute(comptime .wrap(attr), value, owner);
+            }
+        }
+    }
+
+    pub fn attributeChange(el: *Element, name: String, value: String, frame: *Frame) !void {
+        const owner = el.ownerFrame(frame) orelse return;
+        owner.window.setWindowReflectingHandlerFromAttribute(name, value.str(), owner);
+    }
+
+    pub fn attributeRemove(el: *Element, name: String, frame: *Frame) !void {
+        const owner = el.ownerFrame(frame) orelse return;
+        owner.window.setWindowReflectingHandlerFromAttribute(name, null, owner);
+    }
+};

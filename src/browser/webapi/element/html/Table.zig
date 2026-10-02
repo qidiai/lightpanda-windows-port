@@ -1,0 +1,163 @@
+// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+
+const lp = @import("lightpanda");
+
+const js = @import("../../../js/js.zig");
+const Frame = @import("../../../Frame.zig");
+const Factory = @import("../../../Factory.zig");
+
+const Node = @import("../../Node.zig");
+const Element = @import("../../Element.zig");
+const collections = @import("../../collections.zig");
+
+const HtmlElement = @import("../Html.zig");
+
+const Table = @This();
+
+pub const Proto = HtmlElement;
+
+_pad: bool = false,
+_proto_canary: if (lp.IS_DEBUG) *HtmlElement else void = undefined,
+
+pub fn asElement(self: *Table) *Element {
+    return Factory.protoOf(self).asElement();
+}
+pub fn asNode(self: *Table) *Node {
+    return self.asElement().asNode();
+}
+
+fn getTBodies(self: *Table, frame: *Frame) collections.NodeLive(.child_tag) {
+    return collections.NodeLive(.child_tag).init(self.asNode(), .tbody, frame);
+}
+
+fn deleteRow(self: *Table, index: i32, frame: *Frame) !void {
+    if (index < -1) {
+        return error.IndexSizeError;
+    }
+    const row = self.findRow(index) orelse {
+        if (index == -1) {
+            // deleteRow(-1) on a rowless table is a no-op.
+            return;
+        }
+        return error.IndexSizeError;
+    };
+    _ = try row.parentNode().?.removeChild(row, frame);
+}
+
+// Finds the index-th row (or the last row for -1) in spec order: thead, tr,
+// tbody then tfoot
+fn findRow(self: *Table, index: i32) ?*Node {
+    var scan: RowScan = .{ .index = index };
+
+    if (self.scanSectionRows(.thead, &scan)) |row| {
+        return row;
+    }
+
+    var it = self.asNode().childrenIterator();
+    while (it.next()) |child| {
+        const el = child.is(Element) orelse continue;
+        switch (el.getTag()) {
+            .tr => if (scan.check(child)) |row| {
+                return row;
+            },
+            .tbody => if (scanChildRows(child, &scan)) |row| {
+                return row;
+            },
+            else => {},
+        }
+    }
+
+    if (self.scanSectionRows(.tfoot, &scan)) |row| {
+        return row;
+    }
+    if (index == -1) {
+        return scan.last;
+    }
+    return null;
+}
+
+const RowScan = struct {
+    index: i32,
+    count: i32 = 0,
+    last: ?*Node = null,
+
+    fn check(self: *RowScan, row: *Node) ?*Node {
+        if (self.count == self.index) {
+            return row;
+        }
+        self.count += 1;
+        self.last = row;
+        return null;
+    }
+};
+
+fn scanSectionRows(self: *Table, tag: Element.Tag, scan: *RowScan) ?*Node {
+    var it = self.asNode().childrenIterator();
+    while (it.next()) |child| {
+        const el = child.is(Element) orelse continue;
+        if (el.getTag() != tag) {
+            continue;
+        }
+        if (scanChildRows(child, scan)) |row| {
+            return row;
+        }
+    }
+    return null;
+}
+
+fn scanChildRows(section: *Node, scan: *RowScan) ?*Node {
+    var it = section.childrenIterator();
+    while (it.next()) |child| {
+        const el = child.is(Element) orelse continue;
+        if (el.getTag() == .tr) {
+            if (scan.check(child)) |row| {
+                return row;
+            }
+        }
+    }
+    return null;
+}
+
+pub const JsApi = struct {
+    pub const bridge = js.Bridge(Table);
+
+    pub const Meta = struct {
+        pub const name = "HTMLTableElement";
+        pub const prototype_chain = bridge.prototypeChain();
+        pub var class_id: bridge.ClassId = undefined;
+    };
+
+    const reflect = Element.Reflect(Table);
+    pub const width = reflect.string("width");
+    pub const summary = reflect.string("summary");
+    pub const rules = reflect.string("rules");
+    pub const frame = reflect.string("frame");
+    pub const cellSpacing = reflect.stringNullToEmpty("cellspacing");
+    pub const cellPadding = reflect.stringNullToEmpty("cellpadding");
+    pub const border = reflect.string("border");
+    pub const bgColor = reflect.stringNullToEmpty("bgcolor");
+    pub const @"align" = reflect.string("align");
+
+    pub const tBodies = bridge.accessor(Table.getTBodies, null, .{});
+    pub const deleteRow = bridge.function(Table.deleteRow, .{ .ce_reactions = true });
+};
+
+const testing = @import("../../../../testing.zig");
+test "WebApi: HTML.Table" {
+    try testing.htmlRunner("element/html/table.html", .{});
+}

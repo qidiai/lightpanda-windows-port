@@ -1,0 +1,276 @@
+// Copyright (C) 2023-2026  Lightpanda (Selecy SAS)
+//
+// Francis Bouvier <francis@lightpanda.io>
+// Pierre Tachoire <pierre@lightpanda.io>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+const std = @import("std");
+const lp = @import("../lightpanda.zig");
+const DOMNode = @import("webapi/Node.zig");
+const Element = @import("webapi/Element.zig");
+const Event = @import("webapi/Event.zig");
+const MouseEvent = @import("webapi/event/MouseEvent.zig");
+const KeyboardEvent = @import("webapi/event/KeyboardEvent.zig");
+const Frame = @import("Frame.zig");
+const Session = @import("Session.zig");
+
+pub fn dispatchInputAndChangeEvents(el: *Element, frame: *Frame) !void {
+    const input_evt: *Event = try .initTrusted(comptime .wrap("input"), .{ .bubbles = true }, frame.page);
+    frame._event_manager.dispatch(el.asEventTarget(), input_evt) catch |err| {
+        lp.log.debug(.app, "dispatch input event failed", .{ .err = err });
+    };
+
+    const change_evt: *Event = try .initTrusted(comptime .wrap("change"), .{ .bubbles = true }, frame.page);
+    frame._event_manager.dispatch(el.asEventTarget(), change_evt) catch |err| {
+        lp.log.debug(.app, "dispatch change event failed", .{ .err = err });
+    };
+}
+
+pub fn click(node: *DOMNode, frame: *Frame) !void {
+    const el = node.is(Element) orelse return error.InvalidNodeType;
+
+    if (el.isDisabled()) {
+        return;
+    }
+
+    Frame.user_input.updateHoverTarget(frame, el, .{ .with_pointer = true });
+
+    Frame.user_input.triggerClick(frame, el, .{}) catch |err| {
+        lp.log.debug(.app, "click failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+}
+
+pub fn hover(node: *DOMNode, frame: *Frame) !void {
+    const el = node.is(Element) orelse return error.InvalidNodeType;
+
+    const mouseover_event: *MouseEvent = try .initTrusted(comptime .wrap("mouseover"), .{
+        .bubbles = true,
+        .cancelable = true,
+        .composed = true,
+    }, frame);
+
+    frame._event_manager.dispatch(el.asEventTarget(), mouseover_event.asEvent()) catch |err| {
+        lp.log.debug(.app, "hover mouseover failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+
+    const mouseenter_event: *MouseEvent = try .initTrusted(comptime .wrap("mouseenter"), .{
+        .composed = true,
+    }, frame);
+
+    frame._event_manager.dispatch(el.asEventTarget(), mouseenter_event.asEvent()) catch |err| {
+        lp.log.debug(.app, "hover mouseenter failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+}
+
+pub fn press(node: ?*DOMNode, key: []const u8, frame: *Frame) !void {
+    const target: *Element = if (node) |n|
+        (n.is(Element) orelse return error.InvalidNodeType)
+    else
+        Frame.user_input.focusedElement(frame) orelse return error.ActionFailed;
+    const canonical = canonicalKey(key);
+
+    const keydown_event: *KeyboardEvent = try .initTrusted(comptime .wrap("keydown"), .{
+        .bubbles = true,
+        .cancelable = true,
+        .composed = true,
+        .key = canonical,
+    }, frame);
+
+    _ = Frame.user_input.pressKey(frame, target, keydown_event, Frame.user_input.textForKey(keydown_event)) catch |err| {
+        lp.log.debug(.app, "press keydown failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+
+    const keyup_event: *KeyboardEvent = try .initTrusted(comptime .wrap("keyup"), .{
+        .bubbles = true,
+        .cancelable = true,
+        .composed = true,
+        .key = canonical,
+    }, frame);
+
+    frame._event_manager.dispatch(target.asEventTarget(), keyup_event.asEvent()) catch |err| {
+        lp.log.debug(.app, "press keyup failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+}
+
+/// Map common shorthand to the canonical KeyboardEvent.key string so users
+/// can type "enter" instead of "Enter" without surprises.
+fn canonicalKey(key: []const u8) []const u8 {
+    const aliases = [_]struct { in: []const u8, out: []const u8 }{
+        .{ .in = "enter", .out = "Enter" },
+        .{ .in = "return", .out = "Enter" },
+        .{ .in = "\n", .out = "Enter" },
+        .{ .in = "\\n", .out = "Enter" },
+        .{ .in = "esc", .out = "Escape" },
+        .{ .in = "escape", .out = "Escape" },
+        .{ .in = "tab", .out = "Tab" },
+        .{ .in = "\t", .out = "Tab" },
+        .{ .in = "space", .out = " " },
+        .{ .in = "backspace", .out = "Backspace" },
+        .{ .in = "delete", .out = "Delete" },
+        .{ .in = "del", .out = "Delete" },
+        .{ .in = "up", .out = "ArrowUp" },
+        .{ .in = "down", .out = "ArrowDown" },
+        .{ .in = "left", .out = "ArrowLeft" },
+        .{ .in = "right", .out = "ArrowRight" },
+    };
+    for (aliases) |a| {
+        if (std.ascii.eqlIgnoreCase(key, a.in)) return a.out;
+    }
+    return key;
+}
+
+pub fn selectOption(node: *DOMNode, value: []const u8, frame: *Frame) !void {
+    const el = node.is(Element) orelse return error.InvalidNodeType;
+    const select = el.is(Element.Html.Select) orelse return error.InvalidNodeType;
+
+    select.setValue(value, frame) catch |err| {
+        lp.log.debug(.app, "select setValue failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+
+    try dispatchInputAndChangeEvents(el, frame);
+}
+
+pub fn setChecked(node: *DOMNode, checked: bool, frame: *Frame) !void {
+    const el = node.is(Element) orelse return error.InvalidNodeType;
+    const input = el.is(Element.Html.Input) orelse return error.InvalidNodeType;
+
+    if (input._input_type != .checkbox and input._input_type != .radio) {
+        return error.InvalidNodeType;
+    }
+
+    if (input.getChecked() == checked) {
+        return;
+    }
+    if (input._input_type == .radio and !checked) {
+        // A click can never uncheck a radio.
+        return error.InvalidNodeType;
+    }
+
+    // The click's activation behavior (EventManager.ActivationState) toggles
+    // the state and fires input and change; setting the state up front would
+    // make the click undo it, and dispatching input/change here would double
+    // them up.
+    try click(node, frame);
+
+    if (input.getChecked() != checked) {
+        lp.log.debug(.app, "setChecked click prevented", .{});
+        return error.ActionFailed;
+    }
+}
+
+pub fn fill(node: *DOMNode, text: []const u8, frame: *Frame) !void {
+    const el = node.is(Element) orelse return error.InvalidNodeType;
+
+    el.focus(frame) catch |err| {
+        lp.log.debug(.app, "fill focus failed", .{ .err = err });
+    };
+
+    if (el.is(Element.Html.Input)) |input| {
+        input.setValue(text, frame) catch |err| {
+            lp.log.debug(.app, "fill input failed", .{ .err = err });
+            return error.ActionFailed;
+        };
+    } else if (el.is(Element.Html.TextArea)) |textarea| {
+        textarea.setValue(text, frame) catch |err| {
+            lp.log.debug(.app, "fill textarea failed", .{ .err = err });
+            return error.ActionFailed;
+        };
+    } else if (el.is(Element.Html.Select)) |select| {
+        select.setValue(text, frame) catch |err| {
+            lp.log.debug(.app, "fill select failed", .{ .err = err });
+            return error.ActionFailed;
+        };
+    } else {
+        return error.InvalidNodeType;
+    }
+
+    try dispatchInputAndChangeEvents(el, frame);
+}
+
+pub const ScrollResult = struct {
+    /// What scrolled. Always the node the caller named, its nearest scroll
+    /// container, or the window.
+    target: union(enum) {
+        window,
+        node: *DOMNode,
+        container: *DOMNode,
+    },
+    x: u32,
+    y: u32,
+};
+
+pub fn scroll(node: ?*DOMNode, x: ?i32, y: ?i32, frame: *Frame) !ScrollResult {
+    const n = node orelse {
+        frame.window.scrollTo(.{ .opts = .{ .left = x, .top = y } }, null, frame) catch |err| {
+            lp.log.debug(.app, "scroll failed", .{ .err = err });
+            return error.ActionFailed;
+        };
+        return .{ .target = .window, .x = frame.window.getScrollX(), .y = frame.window.getScrollY() };
+    };
+    const el = n.is(Element) orelse return error.InvalidNodeType;
+
+    // A node with no scroll container scrolls itself, not the viewport: the
+    // caller named it.
+    const target = switch (el.scrollContainer(.{ .x = x != null, .y = y != null }, frame)) {
+        .container => |container| container,
+        .viewport => el,
+    };
+    target.scrollTo(.{ .opts = .{ .left = x, .top = y } }, null, frame) catch |err| {
+        lp.log.debug(.app, "scroll failed", .{ .err = err });
+        return error.ActionFailed;
+    };
+    return .{
+        .target = if (target == el) .{ .node = n } else .{ .container = target.asNode() },
+        .x = target.getScrollLeft(frame),
+        .y = target.getScrollTop(frame),
+    };
+}
+
+// Floored to 1 so timeout_ms=0 still gets one check instead of failing outright.
+fn remainingMs(timeout_ms: u32, timer: std.Io.Timestamp) u32 {
+    const elapsed: u32 = @intCast(timer.untilNow(lp.io, .boot).toMilliseconds());
+    return @max(1, timeout_ms -| elapsed);
+}
+
+pub fn waitForSelector(selector: [:0]const u8, timeout_ms: u32, frame_id: u32, session: *Session) !*DOMNode {
+    const timer: std.Io.Timestamp = .now(lp.io, .boot);
+    var runner = session.runner(.{});
+    // Polling needs a parsed document, nothing more. Gating on `.load` would
+    // re-wait the late-script tail a `waitUntil: domcontentloaded` navigation
+    // deliberately skipped.
+    try runner.waitForFrame(frame_id, timeout_ms, .{ .until = .domcontentloaded });
+
+    const el = try runner.waitForSelector(frame_id, selector, remainingMs(timeout_ms, timer));
+    return el.asNode();
+}
+
+pub fn waitForScript(script: [:0]const u8, timeout_ms: u32, frame_id: u32, session: *Session) !void {
+    const timer: std.Io.Timestamp = .now(lp.io, .boot);
+    var runner = session.runner(.{});
+    try runner.waitForFrame(frame_id, timeout_ms, .{ .until = .domcontentloaded });
+
+    return runner.waitForScript(frame_id, script, remainingMs(timeout_ms, timer));
+}
+
+pub fn waitForState(state: lp.Config.WaitUntil, timeout_ms: u32, frame_id: u32, session: *Session) !void {
+    var runner = session.runner(.{});
+    try runner.waitForFrame(frame_id, timeout_ms, .{ .until = state });
+}

@@ -1,0 +1,163 @@
+# Variables
+# ---------
+
+ZIG := zig
+BC := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+# option test filter make test F="server"
+F=
+
+# Extra flags forwarded to every `$(ZIG) build` invocation, e.g.:
+#   ZIGFLAGS=-Ddev_fast=false make test
+ZIGFLAGS ?=
+
+# OS and ARCH
+kernel = $(shell uname -ms)
+ifeq ($(kernel), Darwin arm64)
+	OS := macos
+	ARCH := aarch64
+else ifeq ($(kernel), Darwin x86_64)
+	OS := macos
+	ARCH := x86_64
+else ifeq ($(kernel), Linux aarch64)
+	OS := linux
+	ARCH := aarch64
+else ifeq ($(kernel), Linux arm64)
+	OS := linux
+	ARCH := aarch64
+else ifeq ($(kernel), Linux x86_64)
+	OS := linux
+	ARCH := x86_64
+else
+	$(error "Unhandled kernel: $(kernel)")
+endif
+
+
+# Prebuilt V8
+# -----------
+# Building V8 from source takes 10+ minutes. `make download-v8` fetches the
+# matching prebuilt archive from the zig-v8-fork releases instead; build.zig
+# discovers the cached files itself, so the target only fetches. The versions
+# are read from the install action so they can't drift from CI.
+#
+# The cache path is keyed on ZIG_V8_TAG as well as the archive name: a
+# zig-v8-fork release keeps the same asset filename across tags (the name
+# encodes only the V8 version), so a tag bump that leaves V8_VERSION alone
+# still ships different bytes. Keying the cache on the filename alone made
+# download-v8's `test -f` guard skip that refresh and leave a stale archive
+# in place, which then fails at link time on undefined v8__* symbols.
+V8_ACTION := .github/actions/install/action.yml
+V8_VERSION := $(shell awk -F\' '/^  v8:/{f=1} f&&/default:/{print $$2; exit}' $(V8_ACTION))
+ZIG_V8_TAG := $(shell awk -F\' '/^  zig-v8:/{f=1} f&&/default:/{print $$2; exit}' $(V8_ACTION))
+V8_ARCHIVE := libc_v8_$(V8_VERSION)_$(OS)_$(ARCH).a
+V8_CACHE   := .lp-cache/prebuilt-v8/$(ZIG_V8_TAG)/$(V8_ARCHIVE)
+
+# The shared flavor serves -Ddev_fast (Linux x86_64 Debug only). It is cached
+# under the name the exe's DT_NEEDED records, libc_v8.so; the tag directory
+# already keys freshness.
+V8_SO_ASSET := libc_v8_$(V8_VERSION)_$(OS)_$(ARCH).so
+V8_SO_CACHE := .lp-cache/prebuilt-v8/$(ZIG_V8_TAG)/libc_v8.so
+
+
+# Infos
+# -----
+.PHONY: help
+
+## Display this help screen
+help:
+	@printf "\033[36m%-35s %s\033[0m\n" "Command" "Usage"
+	@sed -n -e '/^## /{'\
+		-e 's/## //g;'\
+		-e 'h;'\
+		-e 'n;'\
+		-e 's/:.*//g;'\
+		-e 'G;'\
+		-e 's/\n/ /g;'\
+		-e 'p;}' Makefile | awk '{printf "\033[33m%-35s\033[0m%s\n", $$1, substr($$0,length($$1)+1)}'
+
+
+# $(ZIG) commands
+# ------------
+.PHONY: build build-v8-snapshot build-dev download-v8 run run-release test bench data end2end clean zig-cache-tmp
+
+# Zig 0.16.0 doesn't create <global cache>/tmp before fetching .zip deps.
+# https://codeberg.org/ziglang/zig/issues/31964
+zig-cache-tmp:
+	@dir=$$($(ZIG) env | sed -n 's/^ *\.global_cache_dir = "\(.*\)",$$/\1/p'); \
+	test -n "$$dir" || { printf "\033[31mCould not read global_cache_dir from '$(ZIG) env'\033[0m\n"; exit 1; }; \
+	mkdir -p "$$dir/tmp"
+
+## Download the prebuilt V8 libraries (skips the 10+ min source build)
+download-v8:
+	@mkdir -p $(dir $(V8_CACHE))
+	@test -f $(V8_CACHE) || ( \
+		printf "\033[36mDownloading prebuilt V8 $(V8_VERSION) ($(ZIG_V8_TAG))...\033[0m\n"; \
+		curl -fL --progress-bar -o $(V8_CACHE) \
+			https://github.com/lightpanda-io/zig-v8-fork/releases/download/$(ZIG_V8_TAG)/$(V8_ARCHIVE) \
+		|| (rm -f $(V8_CACHE); printf "\033[31mDownload ERROR\033[0m\n"; exit 1) )
+	@printf "\033[32mV8 ready: %s\033[0m\n" "$(V8_CACHE)"
+ifeq ($(OS)_$(ARCH),linux_x86_64)
+	@test -f $(V8_SO_CACHE) || ( \
+		printf "\033[36mDownloading prebuilt shared V8 $(V8_VERSION) ($(ZIG_V8_TAG))...\033[0m\n"; \
+		curl -fL --progress-bar -o $(V8_SO_CACHE) \
+			https://github.com/lightpanda-io/zig-v8-fork/releases/download/$(ZIG_V8_TAG)/$(V8_SO_ASSET) \
+		|| (rm -f $(V8_SO_CACHE); printf "\033[31mDownload ERROR\033[0m\n"; exit 1) )
+	@printf "\033[32mShared V8 ready: %s\033[0m\n" "$(V8_SO_CACHE)"
+endif
+
+## Build v8 snapshot
+build-v8-snapshot: zig-cache-tmp
+	@printf "\033[36mBuilding v8 snapshot (release safe)...\033[0m\n"
+	@$(ZIG) build $(ZIGFLAGS) -Doptimize=ReleaseFast snapshot_creator -- src/snapshot.bin || (printf "\033[31mBuild ERROR\033[0m\n"; exit 1;)
+	@printf "\033[32mBuild OK\033[0m\n"
+
+## Build in release-fast mode
+build: build-v8-snapshot
+	@printf "\033[36mBuilding (release fast)...\033[0m\n"
+	@$(ZIG) build $(ZIGFLAGS) -Doptimize=ReleaseFast -Dsnapshot_path=../../snapshot.bin || (printf "\033[31mBuild ERROR\033[0m\n"; exit 1;)
+	@printf "\033[32mBuild OK\033[0m\n"
+
+## Build in debug mode
+build-dev: zig-cache-tmp
+	@printf "\033[36mBuilding (debug)...\033[0m\n"
+	@$(ZIG) build $(ZIGFLAGS) || (printf "\033[31mBuild ERROR\033[0m\n"; exit 1;)
+	@printf "\033[32mBuild OK\033[0m\n"
+
+## Run the server in release mode
+run: build
+	@printf "\033[36mRunning...\033[0m\n"
+	@./zig-out/bin/lightpanda || (printf "\033[31mRun ERROR\033[0m\n"; exit 1;)
+
+## Run the server in debug mode
+run-debug: build-dev
+	@printf "\033[36mRunning...\033[0m\n"
+	@./zig-out/bin/lightpanda || (printf "\033[31mRun ERROR\033[0m\n"; exit 1;)
+
+test: zig-cache-tmp
+	TEST_FILTER="$(or $(F),$(TEST_FILTER))" $(ZIG) build $(ZIGFLAGS) test -freference-trace
+
+## Run demo/runner end to end tests
+end2end:
+	@test -d ../demo
+	cd ../demo && go run runner/main.go
+
+## Run the agent regression suite from ../demo (LAYER=deterministic|live|all,
+## default all). The live layer needs GOOGLE_API_KEY or GEMINI_API_KEY;
+## without one only the deterministic layer runs. See ../demo/agent/README.md.
+test-agent:
+	@test -d ../demo
+	@test -x zig-out/bin/lightpanda || $(MAKE) build ZIGFLAGS="$(ZIGFLAGS)"
+	@cd ../demo && ./agent/run.sh $(LAYER)
+
+## Remove build artifacts (keeps .lp-cache/ and zig-pkg/ — slow to re-fetch)
+clean:
+	rm -rf zig-out .zig-cache src/snapshot.bin
+	cd src/rust && cargo clean
+
+# Install and build required dependencies commands
+# ------------
+.PHONY: install
+
+install: build
+
+data:
+	cd src/data && go run public_suffix_list_gen.go > public_suffix_list.zig
