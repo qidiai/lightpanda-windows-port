@@ -34,6 +34,17 @@ jobs:
           New-Item sqlite-amalg -ItemType Directory -Force | Out-Null
           tar -xf sqlite-amalgamation-3530200.zip -C sqlite-amalg --strip-components=1
           zig fetch "${{ github.workspace }}\sqlite-amalg" | Out-Host
+      - name: diagnose VS/SDK layout on runner
+        shell: pwsh
+        run: |
+          "--- vswhere installationPath ---"
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products * -property installationPath 2>$null
+          "--- x86 BuildTools MSVC ---"
+          if (Test-Path "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC") { (Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC").Name }
+          "--- full editions ---"
+          if (Test-Path "C:\Program Files\Microsoft Visual Studio\2022") { (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022").Name }
+          "--- Windows Kits Lib ---"
+          if (Test-Path "C:\Program Files (x86)\Windows Kits\10\Lib") { (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Lib").Name }
       - name: Build lightpanda native windows (V8 from source, ~1-1.5h)
         shell: cmd
         run: |
