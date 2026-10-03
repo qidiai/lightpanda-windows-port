@@ -118,16 +118,18 @@ pub fn build(b: *Build) !void {
     // WIN-PORT PATCH: expose MSVC/SDK import libs for /DEFAULTLIB directives from c_v8.lib
     if (target.result.os.tag == .windows) {
         // WIN-PORT PATCH: filtered msvcrt.lib (TLS clash symbols removed) wins lookup first
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "D:\\lightpanda-win\\filtered-libs" });
+        lightpanda_module.addLibraryPath(windowsFilteredLibs(b));
         lightpanda_module.linkSystemLibrary("bcrypt", .{});
         lightpanda_module.linkSystemLibrary("iphlpapi", .{});
         lightpanda_module.linkSystemLibrary("vcruntime", .{});
         lightpanda_module.linkSystemLibrary("dbghelp", .{});
         lightpanda_module.linkSystemLibrary("winmm", .{});
         lightpanda_module.addCSourceFile(.{ .file = b.path("win-port/shims.c") });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\lib\\x64" });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\um\\x64" });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\ucrt\\x64" });
+        const msvc_lib_x64 = try resolveMsvcLibX64(b);
+        const win_sdk_libs = try resolveWinSdkLibs(b);
+        lightpanda_module.addLibraryPath(.{ .cwd_relative = msvc_lib_x64 });
+        lightpanda_module.addLibraryPath(.{ .cwd_relative = win_sdk_libs.um_x64 });
+        lightpanda_module.addLibraryPath(.{ .cwd_relative = win_sdk_libs.ucrt_x64 });
     }
     lightpanda_module.addImport("build_config", opts.createModule());
 
@@ -351,6 +353,166 @@ fn actionDefault(action: []const u8, key: []const u8) ?[]const u8 {
     }
     std.debug.print("Can't parse the `{s} default:` value from .github/actions/install/action.yml; prebuilt V8 discovery skipped.\n", .{key});
     return null;
+}
+
+/// WIN-PORT: the filtered msvcrt.lib (TLS clash symbols removed)
+/// location. The repo ships the modified copy under win-port/ so a
+/// fresh clone links without setup; LP_FILTERED_LIBS overrides it
+/// for CI that regenerates the library elsewhere.
+fn windowsFilteredLibs(b: *Build) Build.LazyPath {
+    if (b.graph.environ_map.get("LP_FILTERED_LIBS")) |p| return .{ .cwd_relative = p };
+    return b.path("win-port/filtered-libs");
+}
+
+const WinSdkLibs = struct { um_x64: []const u8, ucrt_x64: []const u8 };
+
+/// WIN-PORT: resolves the MSVC `lib\x64` import-lib directory at
+/// build time so builds don't depend on the exact toolset version
+/// installed. LP_MSVC_LIB_X64 overrides; otherwise the newest
+/// toolset of the Visual Studio installs on the machine wins.
+fn resolveMsvcLibX64(b: *Build) ![]const u8 {
+    const io = b.graph.io;
+    if (b.graph.environ_map.get("LP_MSVC_LIB_X64")) |p| {
+        if (std.Io.Dir.accessAbsolute(io, p, .{})) |_| {
+            std.debug.print("Using MSVC import libs (LP_MSVC_LIB_X64): {s}\n", .{p});
+            return p;
+        } else |_| {
+            std.debug.print("LP_MSVC_LIB_X64 points at a missing directory: {s}\nMSVC lib\\x64 search points:\n", .{p});
+            printMsvcSearchPoints();
+            return error.MsvcLibX64NotFound;
+        }
+    }
+    // BuildTools installs (Program Files (x86)); the 2019 layout is
+    // tried too, for machines that still have it.
+    if (tryMsvcRoot(b, "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools", null)) |lib_x64| {
+        std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
+        return lib_x64;
+    }
+    if (tryMsvcRoot(b, "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools", null)) |lib_x64| {
+        std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
+        return lib_x64;
+    }
+    // Full editions (Professional/Enterprise/Community) under
+    // Program Files.
+    for ([_][]const u8{
+        "C:\\Program Files\\Microsoft Visual Studio\\2022",
+        "C:\\Program Files\\Microsoft Visual Studio\\2019",
+    }) |editions_root| {
+        if (std.Io.Dir.openDirAbsolute(io, editions_root, .{ .iterate = true })) |editions| {
+            defer editions.close(io);
+            var it = editions.iterate();
+            while (it.next(io) catch null) |entry| {
+                if (entry.kind != .directory) continue;
+                if (tryMsvcRoot(b, editions_root, entry.name)) |lib_x64| {
+                    std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
+                    return lib_x64;
+                }
+            }
+        } else |_| {}
+    }
+    std.debug.print("No MSVC lib\\x64 import-lib directory found; searched:\n", .{});
+    printMsvcSearchPoints();
+    return error.MsvcLibX64NotFound;
+}
+
+/// Tries one Visual Studio install root: `<vs_root>\VC\Tools\MSVC`
+/// for BuildTools, `<vs_root>\<edition>\VC\Tools\MSVC` for full
+/// editions. Returns the newest toolset's `lib\x64` when it exists.
+fn tryMsvcRoot(b: *Build, vs_root: []const u8, edition: ?[]const u8) ?[]const u8 {
+    const msvc_root = if (edition) |e|
+        b.fmt("{s}\\{s}\\VC\\Tools\\MSVC", .{ vs_root, e })
+    else
+        b.fmt("{s}\\VC\\Tools\\MSVC", .{vs_root});
+    const toolset = newestVersionSubdir(b, msvc_root, "lib\\x64") catch return null;
+    const toolset_dir = toolset orelse return null;
+    return b.fmt("{s}\\{s}\\lib\\x64", .{ msvc_root, toolset_dir });
+}
+
+/// WIN-PORT: resolves the Windows SDK `um\x64`/`ucrt\x64` import-lib
+/// directories. LP_WINSDK_DIR overrides the Lib root (or points
+/// straight at a version directory); otherwise the newest version
+/// under the Windows 10 SDK Lib directory wins.
+fn resolveWinSdkLibs(b: *Build) !WinSdkLibs {
+    const io = b.graph.io;
+    if (b.graph.environ_map.get("LP_WINSDK_DIR")) |p| {
+        // Accept either the SDK Lib root (version directories
+        // inside) or a version directory directly.
+        var version_dir: ?[]const u8 = null;
+        if (std.Io.Dir.accessAbsolute(io, b.fmt("{s}\\um\\x64", .{p}), .{})) |_| {
+            version_dir = p;
+        } else |_| {
+            version_dir = try newestVersionSubdir(b, p, "um\\x64");
+        }
+        if (version_dir) |dir| return winSdkLibs(b, dir);
+        std.debug.print("LP_WINSDK_DIR points at a directory without a usable Windows SDK: {s}\nWindows SDK Lib search points:\n", .{p});
+        printWinSdkSearchPoints();
+        return error.WinSdkLibNotFound;
+    }
+    const lib_root = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib";
+    const version_dir = (try newestVersionSubdir(b, lib_root, "um\\x64")) orelse {
+        std.debug.print("No Windows SDK um\\x64 import-lib directory found; searched:\n", .{});
+        printWinSdkSearchPoints();
+        return error.WinSdkLibNotFound;
+    };
+    return winSdkLibs(b, version_dir);
+}
+
+fn winSdkLibs(b: *Build, version_dir: []const u8) WinSdkLibs {
+    return .{
+        .um_x64 = b.fmt("{s}\\um\\x64", .{version_dir}),
+        .ucrt_x64 = b.fmt("{s}\\ucrt\\x64", .{version_dir}),
+    };
+}
+
+/// Returns the name of the highest-version subdirectory of `dir`
+/// whose `probe` subpath exists ("14.44.35207" under
+/// ...\VC\Tools\MSVC, "10.0.26100.0" under ...\Windows Kits\10\Lib).
+/// Returns null when `dir` doesn't exist or holds no matching
+/// subdirectory. Names are copied to b.allocator because the Io
+/// iterator reuses its buffer.
+fn newestVersionSubdir(b: *Build, dir: []const u8, probe: []const u8) !?[]const u8 {
+    const io = b.graph.io;
+    var d = std.Io.Dir.openDirAbsolute(io, dir, .{ .iterate = true }) catch return null;
+    defer d.close(io);
+    var it = d.iterate();
+    var best: ?[]const u8 = null;
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (best != null and !versionGreater(entry.name, best.?)) continue;
+        std.Io.Dir.accessAbsolute(io, b.fmt("{s}\\{s}\\{s}", .{ dir, entry.name, probe }), .{}) catch continue;
+        best = try b.allocator.dupe(u8, entry.name);
+    }
+    return best;
+}
+
+/// Orders dotted version strings ("14.44.35207", "10.0.26100.0")
+/// by numeric component; components that don't parse as numbers
+/// compare as strings, and the longer string wins once the other
+/// runs out of components.
+fn versionGreater(a: []const u8, b: []const u8) bool {
+    var ait = std.mem.splitScalar(u8, a, '.');
+    var bit = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const ac = ait.next();
+        const bc = bit.next();
+        if (ac == null) return false;
+        if (bc == null) return true;
+        const an = std.fmt.parseInt(u32, ac.?, 10) catch return std.mem.order(u8, ac.?, bc.?) == .gt;
+        const bn = std.fmt.parseInt(u32, bc.?, 10) catch return std.mem.order(u8, ac.?, bc.?) == .gt;
+        if (an != bn) return an > bn;
+    }
+}
+
+fn printMsvcSearchPoints() void {
+    std.debug.print("  C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\<version>\\lib\\x64\n", .{});
+    std.debug.print("  C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\<version>\\lib\\x64\n", .{});
+    std.debug.print("  C:\\Program Files\\Microsoft Visual Studio\\2022\\<edition>\\VC\\Tools\\MSVC\\<version>\\lib\\x64\n", .{});
+    std.debug.print("  C:\\Program Files\\Microsoft Visual Studio\\2019\\<edition>\\VC\\Tools\\MSVC\\<version>\\lib\\x64\n", .{});
+}
+
+fn printWinSdkSearchPoints() void {
+    std.debug.print("  C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\<version>\\um\\x64\n", .{});
+    std.debug.print("  C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\<version>\\ucrt\\x64\n", .{});
 }
 
 /// Renames the hot V8 functions' sections (`.text` -> `.text.hot.<sym>`, see
