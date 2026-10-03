@@ -11,10 +11,10 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/**"
-      - "src/**"
-      - "build.zig"
-      - "build.zig.zon"
+    - .github/**
+    - src/**
+    - build.zig
+    - build.zig.zon
 
   pull_request:
     # By default GH trigger on types opened, synchronize and reopened.
@@ -25,10 +25,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
     paths:
-      - ".github/**"
-      - "src/**"
-      - "build.zig"
-      - "build.zig.zon"
+    - .github/**
+    - src/**
+    - build.zig
+    - build.zig.zon
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -43,14 +43,14 @@ jobs:
     if: github.event.pull_request.draft == false
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10   # v6.0.3
 
       # Zig version used from the `minimum_zig_version` field in build.zig.zon
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29   # v2.2.1
 
-      - name: Run zig fmt
-        id: fmt
-        run: zig fmt --check ./
+    - name: Run zig fmt
+      id: fmt
+      run: zig fmt --check ./
 
   zig-test-debug:
     name: zig test using v8 in debug mode
@@ -62,16 +62,16 @@ jobs:
     if: github.event.pull_request.draft == false
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10   # v6.0.3
+      with:
+        fetch-depth: 0
 
-      - uses: ./.github/actions/install
-        with:
-          debug: true
+    - uses: ./.github/actions/install
+      with:
+        debug: true
 
-      - name: zig build test
-        run: zig build -Dprebuilt_v8_path=v8/libc_v8_debug.a -Dtsan=true test
+    - name: zig build test
+      run: zig build -Dprebuilt_v8_path=v8/libc_v8_debug.a -Dtsan=true test
 
   zig-test-release:
     name: zig test
@@ -83,48 +83,26 @@ jobs:
     if: github.event.pull_request.draft == false
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10   # v6.0.3
+      with:
+        fetch-depth: 0
 
-      - uses: ./.github/actions/install
+    - uses: ./.github/actions/install
 
-      - name: zig build test
-        run: METRICS=true zig build -Dprebuilt_v8_path=v8/libc_v8.a test > bench.json
+    - name: zig build test
+      run: METRICS=true zig build -Dprebuilt_v8_path=v8/libc_v8.a test > 
+        bench.json
 
-      - name: write commit
-        run: |
-          echo "${{github.sha}}" > commit.txt
+    - name: write commit
+      run: |
+        echo "${{github.sha}}" > commit.txt
 
-      - name: upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: bench-results
-          path: |
-            bench.json
-            commit.txt
-          retention-days: 10
+    - name: upload artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      with:
+        name: bench-results
+        path: |
+          bench.json
+          commit.txt
+        retention-days: 10
 
-  bench-fmt:
-    name: perf-fmt
-    needs: zig-test-release
-
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    if: github.event_name != 'pull_request'
-
-    container:
-      image: ghcr.io/lightpanda-io/perf-fmt:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - name: download artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: bench-results
-
-      - name: format and send json result
-        run: /perf-fmt bench-browser ${{ github.sha }} bench.json

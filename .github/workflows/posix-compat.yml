@@ -1,0 +1,26 @@
+name: posix-compat
+
+on: [push, pull_request]
+
+# Windows 移植补丁全部走 comptime 门控，此工作流验证：
+# 移植后的树在原生 Linux 目标上仍能完整构建（回归保护）。
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/install
+
+      - uses: ./.github/actions/v8-snapshot
+
+      - name: zig build release (linux)
+        run: zig build -Dsnapshot_path=../../snapshot.bin -Dprebuilt_v8_path=v8/libc_v8.a -Doptimize=ReleaseFast -Dcpu=x86_64
+
+      - name: smoke
+        run: |
+          ./zig-out/bin/lightpanda version
+          ./zig-out/bin/lightpanda fetch https://example.com --dump markdown | head -5
