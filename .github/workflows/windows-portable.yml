@@ -11,7 +11,7 @@ on:
 jobs:
   portable:
     runs-on: windows-latest
-    timeout-minutes: 200
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -45,6 +45,17 @@ jobs:
           if (Test-Path "C:\Program Files\Microsoft Visual Studio\2022") { (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022").Name }
           "--- Windows Kits Lib ---"
           if (Test-Path "C:\Program Files (x86)\Windows Kits\10\Lib") { (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Lib").Name }
+      - name: Pre-place gn.exe + ninja.exe (depot_tools archive has no CIPD bootstrap)
+        shell: pwsh
+        run: |
+          $dt = "D:\a\lightpanda-windows-port\lightpanda-windows-port\.lp-cache\depot_tools-15.5.35.13"
+          New-Item $dt -ItemType Directory -Force | Out-Null
+          foreach ($pkg in @(@('gn','https://chrome-infra-packages.appspot.com/dl/gn/gn/windows-amd64/+/latest'), @('ninja','https://chrome-infra-packages.appspot.com/dl/infra/3pp/tools/ninja/windows-amd64/+/latest'))) {
+            curl.exe -sL --max-time 300 -o "$env:RUNNER_TEMP\$($pkg[0]).zip" $pkg[1]
+            Expand-Archive "$env:RUNNER_TEMP\$($pkg[0]).zip" "$env:RUNNER_TEMP\$($pkg[0])" -Force
+            Copy-Item "$env:RUNNER_TEMP\$($pkg[0])\$($pkg[0]).exe" $dt -Force
+          }
+          & "$dt\gn.exe" --version; & "$dt\ninja.exe" --version
       - name: Build lightpanda native windows (V8 from source, ~1-1.5h)
         shell: cmd
         run: |
