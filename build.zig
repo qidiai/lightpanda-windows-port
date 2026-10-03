@@ -402,24 +402,28 @@ fn resolveMsvcLibX64(b: *Build) ![]const u8 {
         std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
         return lib_x64;
     }
-    // Full editions (Professional/Enterprise/Community) under
-    // Program Files.
-    for ([_][]const u8{
-        "C:\\Program Files\\Microsoft Visual Studio\\2022",
-        "C:\\Program Files\\Microsoft Visual Studio\\2019",
-    }) |editions_root| {
-        if (std.Io.Dir.openDirAbsolute(io, editions_root, .{ .iterate = true })) |editions| {
-            defer editions.close(io);
-            var it = editions.iterate();
-            while (it.next(io) catch null) |entry| {
-                if (entry.kind != .directory) continue;
-                if (tryMsvcRoot(b, editions_root, entry.name)) |lib_x64| {
-                    std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
-                    return lib_x64;
+    // WIN-PORT: full editions under Program Files, *any* VS version
+    // (18, 2022, 2019 ...) -- GitHub runners moved to "Microsoft
+    // Visual Studio\18\Enterprise" (VS2026), so a fixed list misses.
+    if (std.Io.Dir.openDirAbsolute(io, "C:\\Program Files\\Microsoft Visual Studio", .{ .iterate = true })) |versions| {
+        defer versions.close(io);
+        var vit = versions.iterate();
+        while (vit.next(io) catch null) |ver| {
+            if (ver.kind != .directory) continue;
+            const ver_root = b.fmt("C:\\Program Files\\Microsoft Visual Studio\\{s}", .{ver.name});
+            if (std.Io.Dir.openDirAbsolute(io, ver_root, .{ .iterate = true })) |editions| {
+                defer editions.close(io);
+                var eit = editions.iterate();
+                while (eit.next(io) catch null) |ed| {
+                    if (ed.kind != .directory) continue;
+                    if (tryMsvcRoot(b, ver_root, ed.name)) |lib_x64| {
+                        std.debug.print("Using MSVC import libs: {s}\n", .{lib_x64});
+                        return lib_x64;
+                    }
                 }
-            }
-        } else |_| {}
-    }
+            } else |_| {}
+        }
+    } else |_| {}
     std.debug.print("No MSVC lib\\x64 import-lib directory found; searched:\n", .{});
     printMsvcSearchPoints();
     return error.MsvcLibX64NotFound;
