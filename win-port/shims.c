@@ -20,6 +20,11 @@ long double _strtold_l(const char *s, char **e, void *loc)
 }
 void *__imp__strtold_l = (void *)_strtold_l;
 
+/* c_v8.lib (chromium libc++) references strtold as dllimport; provide the
+ * __imp_ slot explicitly so lld-link does not warn LNK4217 about the local
+ * definition in libmingw32. */
+void *__imp_strtold = (void *)strtold;
+
 /* localtime_s: not in msvcrt.dll nor ucrt.lib present here; Win32 API impl. */
 #undef localtime_s
 int localtime_s(struct tm *_tm, const time_t *_time)

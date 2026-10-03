@@ -97,21 +97,30 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
     // Darwin's socket() rejects flag bits in the type argument (its
     // SOCK.NONBLOCK/CLOEXEC are Zig-invented shim values); strip them and
     // apply via fcntl instead. Linux/FreeBSD accept them natively.
-    const flag_bits = posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC;
+    const flag_bits: u32 = if (comptime builtin.os.tag.isDarwin())
+        posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC
+    else
+        0;
     const extra: u32 = if (comptime builtin.os.tag.isDarwin()) socket_type & flag_bits else 0;
     const rc = c.socket(domain, socket_type & ~extra, protocol);
     if (rc < 0) {
         return errnoError(c.errno(rc));
     }
-    errdefer _ = c.close(rc);
-    if (extra & posix.SOCK.NONBLOCK != 0) {
-        const fl = try fcntl(rc, posix.F.GETFL, 0);
-        _ = try fcntl(rc, posix.F.SETFL, fl | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+    if (comptime builtin.os.tag == .windows) {
+        // ws2_32's socket() returns an integer-indexed SOCKET
+        // handle; socket_t on Windows is a HANDLE.
+        return @ptrFromInt(@as(usize, @intCast(rc)));
+    } else {
+        errdefer _ = c.close(rc);
+        if (extra & posix.SOCK.NONBLOCK != 0) {
+            const fl = try fcntl(rc, posix.F.GETFL, 0);
+            _ = try fcntl(rc, posix.F.SETFL, fl | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+        }
+        if (extra & posix.SOCK.CLOEXEC != 0) {
+            _ = try fcntl(rc, posix.F.SETFD, posix.FD_CLOEXEC);
+        }
+        return rc;
     }
-    if (extra & posix.SOCK.CLOEXEC != 0) {
-        _ = try fcntl(rc, posix.F.SETFD, posix.FD_CLOEXEC);
-    }
-    return rc;
 }
 
 pub fn bind(sock: socket_t, addr: *const posix.sockaddr, len: posix.socklen_t) !void {
@@ -131,32 +140,48 @@ pub fn listen(sock: socket_t, backlog: u31) !void {
 pub fn accept(sock: socket_t, addr: ?*posix.sockaddr, addr_size: ?*posix.socklen_t, flags: u32) !socket_t {
     const have_accept4 = !(builtin.target.os.tag.isDarwin() or native_os == .windows or native_os == .haiku);
 
-    const accepted_sock: socket_t = while (true) {
-        const rc = if (have_accept4)
-            c.accept4(sock, addr, addr_size, flags)
-        else
-            c.accept(sock, addr, addr_size);
+    if (comptime native_os == .windows) {
+        // ws2_32's accept() returns an integer-indexed SOCKET
+        // handle; socket_t is a HANDLE on Windows. There is no
+        // accept4, so the flags argument is unused.
+        while (true) {
+            const rc = c.accept(sock, addr, addr_size);
+            if (rc < 0) {
+                switch (c.errno(rc)) {
+                    .INTR => continue,
+                    else => |e| return errnoError(e),
+                }
+            }
+            return @ptrFromInt(@as(usize, @intCast(rc)));
+        }
+    } else {
+        const accepted_sock: socket_t = while (true) {
+            const rc = if (have_accept4)
+                c.accept4(sock, addr, addr_size, flags)
+            else
+                c.accept(sock, addr, addr_size);
 
-        if (rc < 0) {
-            switch (c.errno(rc)) {
-                .INTR => continue,
-                else => |e| return errnoError(e),
+            if (rc < 0) {
+                switch (c.errno(rc)) {
+                    .INTR => continue,
+                    else => |e| return errnoError(e),
+                }
+            }
+            break rc;
+        };
+
+        if (have_accept4 == false) {
+            errdefer _ = c.close(accepted_sock);
+            if (flags & posix.SOCK.NONBLOCK != 0) {
+                const fl = try fcntl(accepted_sock, posix.F.GETFL, 0);
+                _ = try fcntl(accepted_sock, posix.F.SETFL, fl | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+            }
+            if (flags & posix.SOCK.CLOEXEC != 0) {
+                _ = try fcntl(accepted_sock, posix.F.SETFD, posix.FD_CLOEXEC);
             }
         }
-        break rc;
-    };
-
-    if (have_accept4 == false) {
-        errdefer _ = c.close(accepted_sock);
-        if (flags & posix.SOCK.NONBLOCK != 0) {
-            const fl = try fcntl(accepted_sock, posix.F.GETFL, 0);
-            _ = try fcntl(accepted_sock, posix.F.SETFL, fl | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
-        }
-        if (flags & posix.SOCK.CLOEXEC != 0) {
-            _ = try fcntl(accepted_sock, posix.F.SETFD, posix.FD_CLOEXEC);
-        }
+        return accepted_sock;
     }
-    return accepted_sock;
 }
 
 const ShutdownHow = enum { recv, send, both };
@@ -189,6 +214,26 @@ pub fn connect(addr: *const IpAddress) !socket_t {
         return errnoError(c.errno(rc));
     }
     return sock;
+}
+
+// std.posix.read is a compileError on Windows; kernel32's
+// ReadFile is the equivalent for a socket handle.
+extern "kernel32" fn ReadFile(
+    hFile: posix.socket_t,
+    lpBuffer: [*]u8,
+    nNumberOfBytesToRead: u32,
+    lpNumberOfBytesRead: *u32,
+    lpOverlapped: ?*anyopaque,
+) std.os.windows.BOOL;
+
+pub fn readSocket(sock: socket_t, buf: []u8) !usize {
+    if (comptime builtin.os.tag == .windows) {
+        var nread: u32 = 0;
+        if (ReadFile(sock, buf.ptr, @intCast(buf.len), &nread, null) == .FALSE)
+            return error.InputOutput;
+        return nread;
+    }
+    return posix.read(sock, buf);
 }
 
 pub fn writeAll(sock: socket_t, bytes: []const u8) !void {
