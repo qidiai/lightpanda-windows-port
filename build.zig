@@ -355,12 +355,22 @@ fn actionDefault(action: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Returns the LP_* override's value with surrounding
+/// whitespace stripped (shell `set` quirks can append a
+/// trailing space), or null when unset/empty.
+fn envPath(b: *Build, name: []const u8) ?[]const u8 {
+    const value = b.graph.environ_map.get(name) orelse return null;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
 /// WIN-PORT: the filtered msvcrt.lib (TLS clash symbols removed)
 /// location. The repo ships the modified copy under win-port/ so a
 /// fresh clone links without setup; LP_FILTERED_LIBS overrides it
 /// for CI that regenerates the library elsewhere.
 fn windowsFilteredLibs(b: *Build) Build.LazyPath {
-    if (b.graph.environ_map.get("LP_FILTERED_LIBS")) |p| return .{ .cwd_relative = p };
+    if (envPath(b, "LP_FILTERED_LIBS")) |p| return .{ .cwd_relative = p };
     return b.path("win-port/filtered-libs");
 }
 
@@ -372,7 +382,7 @@ const WinSdkLibs = struct { um_x64: []const u8, ucrt_x64: []const u8 };
 /// toolset of the Visual Studio installs on the machine wins.
 fn resolveMsvcLibX64(b: *Build) ![]const u8 {
     const io = b.graph.io;
-    if (b.graph.environ_map.get("LP_MSVC_LIB_X64")) |p| {
+    if (envPath(b, "LP_MSVC_LIB_X64")) |p| {
         if (std.Io.Dir.accessAbsolute(io, p, .{})) |_| {
             std.debug.print("Using MSVC import libs (LP_MSVC_LIB_X64): {s}\n", .{p});
             return p;
@@ -423,9 +433,9 @@ fn tryMsvcRoot(b: *Build, vs_root: []const u8, edition: ?[]const u8) ?[]const u8
         b.fmt("{s}\\{s}\\VC\\Tools\\MSVC", .{ vs_root, e })
     else
         b.fmt("{s}\\VC\\Tools\\MSVC", .{vs_root});
-    const toolset = newestVersionSubdir(b, msvc_root, "lib\\x64") catch return null;
-    const toolset_dir = toolset orelse return null;
-    return b.fmt("{s}\\{s}\\lib\\x64", .{ msvc_root, toolset_dir });
+    const toolset_dir = newestVersionSubdir(b, msvc_root, "lib\\x64") catch return null;
+    const toolset = toolset_dir orelse return null;
+    return b.fmt("{s}\\lib\\x64", .{toolset});
 }
 
 /// WIN-PORT: resolves the Windows SDK `um\x64`/`ucrt\x64` import-lib
@@ -434,7 +444,7 @@ fn tryMsvcRoot(b: *Build, vs_root: []const u8, edition: ?[]const u8) ?[]const u8
 /// under the Windows 10 SDK Lib directory wins.
 fn resolveWinSdkLibs(b: *Build) !WinSdkLibs {
     const io = b.graph.io;
-    if (b.graph.environ_map.get("LP_WINSDK_DIR")) |p| {
+    if (envPath(b, "LP_WINSDK_DIR")) |p| {
         // Accept either the SDK Lib root (version directories
         // inside) or a version directory directly.
         var version_dir: ?[]const u8 = null;
@@ -464,25 +474,27 @@ fn winSdkLibs(b: *Build, version_dir: []const u8) WinSdkLibs {
     };
 }
 
-/// Returns the name of the highest-version subdirectory of `dir`
-/// whose `probe` subpath exists ("14.44.35207" under
-/// ...\VC\Tools\MSVC, "10.0.26100.0" under ...\Windows Kits\10\Lib).
+/// Returns the path of the highest-version subdirectory of
+/// `dir` whose `probe` subpath exists (e.g.
+/// ...\VC\Tools\MSVC\14.44.35207, ...\Windows Kits\10\Lib\10.0.26100.0).
 /// Returns null when `dir` doesn't exist or holds no matching
-/// subdirectory. Names are copied to b.allocator because the Io
-/// iterator reuses its buffer.
+/// subdirectory. The best name is kept separately because the
+/// Io iterator reuses its buffer.
 fn newestVersionSubdir(b: *Build, dir: []const u8, probe: []const u8) !?[]const u8 {
     const io = b.graph.io;
     var d = std.Io.Dir.openDirAbsolute(io, dir, .{ .iterate = true }) catch return null;
     defer d.close(io);
     var it = d.iterate();
-    var best: ?[]const u8 = null;
+    var best_name: ?[]const u8 = null;
+    var best_path: ?[]const u8 = null;
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
-        if (best != null and !versionGreater(entry.name, best.?)) continue;
+        if (best_name != null and !versionGreater(entry.name, best_name.?)) continue;
         std.Io.Dir.accessAbsolute(io, b.fmt("{s}\\{s}\\{s}", .{ dir, entry.name, probe }), .{}) catch continue;
-        best = try b.allocator.dupe(u8, entry.name);
+        best_name = try b.allocator.dupe(u8, entry.name);
+        best_path = b.fmt("{s}\\{s}", .{ dir, entry.name });
     }
-    return best;
+    return best_path;
 }
 
 /// Orders dotted version strings ("14.44.35207", "10.0.26100.0")
