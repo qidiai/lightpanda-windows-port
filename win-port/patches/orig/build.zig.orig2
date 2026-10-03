@@ -114,21 +114,6 @@ pub fn build(b: *Build) !void {
         .sanitize_thread = enable_tsan,
     });
     lightpanda_module.addImport("lightpanda", lightpanda_module); // allow circular "lightpanda" import
-
-    // WIN-PORT PATCH: expose MSVC/SDK import libs for /DEFAULTLIB directives from c_v8.lib
-    if (target.result.os.tag == .windows) {
-        // WIN-PORT PATCH: filtered msvcrt.lib (TLS clash symbols removed) wins lookup first
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "D:\\lightpanda-win\\filtered-libs" });
-        lightpanda_module.linkSystemLibrary("bcrypt", .{});
-        lightpanda_module.linkSystemLibrary("iphlpapi", .{});
-        lightpanda_module.linkSystemLibrary("vcruntime", .{});
-        lightpanda_module.linkSystemLibrary("dbghelp", .{});
-        lightpanda_module.linkSystemLibrary("winmm", .{});
-        lightpanda_module.addCSourceFile(.{ .file = b.path("win-port/shims.c") });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\lib\\x64" });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\um\\x64" });
-        lightpanda_module.addLibraryPath(.{ .cwd_relative = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.26100.0\\ucrt\\x64" });
-    }
     lightpanda_module.addImport("build_config", opts.createModule());
 
     const fmt_step = b.step("fmt", "Check code formatting");
@@ -969,7 +954,6 @@ fn buildCurl(
             "-DHAVE_CONFIG_H",
             "-DCURL_STATICLIB",
             "-DBUILDING_LIBCURL",
-            "-DNGHTTP2_STATICLIB", // WIN-PORT PATCH: nghttp2 is linked statically
         },
         .files = &.{
             // You can include all files from lib, libcurl uses #ifdef-guards to exclude code for disabled functions

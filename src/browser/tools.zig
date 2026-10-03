@@ -2358,13 +2358,37 @@ fn formatLpEnvNames(arena: std.mem.Allocator, env_names: []const []const u8) Too
 /// `std.os.environ` slice or name pointers into entries would dangle.
 pub fn lpEnvNames(arena: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
     var env_names: std.ArrayList([]const u8) = .empty;
-    var ptr = std.c.environ;
-    while (ptr[0]) |entry| : (ptr += 1) {
-        const line = std.mem.span(entry);
-        const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const name = line[0..eq_idx];
-        if (!std.mem.startsWith(u8, name, "LP_")) continue;
-        try env_names.append(arena, try arena.dupe(u8, name));
+    if (comptime builtin.os.tag == .windows) {
+        // std.c.environ is a mingw CRT global with no MSVC
+        // counterpart (it stays undefined at link), so walk the
+        // PEB environment block directly — UTF-16 "NAME=VALUE"
+        // entries terminated by an empty one — the same block
+        // std.process.Environ's Windows path reads.
+        const env_ptr = std.os.windows.peb().ProcessParameters.Environment;
+        var i: usize = 0;
+        while (env_ptr[i] != 0) {
+            const key_value = std.mem.sliceTo(env_ptr[i..], 0);
+            // Skip past a leading '=' (the "=C:=..." drive
+            // entries); names must contain a '=' to be listed.
+            if (std.mem.findScalarPos(u16, key_value, 1, '=')) |equal_index| {
+                const name_w = key_value[0..equal_index];
+                if (name_w.len >= 3 and name_w[0] == 'L' and name_w[1] == 'P' and name_w[2] == '_') {
+                    const name = std.unicode.utf16LeToUtf8Alloc(arena, name_w) catch continue;
+                    try env_names.append(arena, name);
+                }
+            }
+            // skip past the NUL terminator
+            i += key_value.len + 1;
+        }
+    } else {
+        var ptr = std.c.environ;
+        while (ptr[0]) |entry| : (ptr += 1) {
+            const line = std.mem.span(entry);
+            const eq_idx = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const name = line[0..eq_idx];
+            if (!std.mem.startsWith(u8, name, "LP_")) continue;
+            try env_names.append(arena, try arena.dupe(u8, name));
+        }
     }
     std.mem.sort([]const u8, env_names.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
