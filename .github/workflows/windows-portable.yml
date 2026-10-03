@@ -26,6 +26,14 @@ jobs:
           $zigbin = (Get-ChildItem $env:RUNNER_TEMP\zig -Directory).FullName
           Write-Output $zigbin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+      - name: Pre-fetch sqlite amalgamation (zig 0.16 zip-fetch workaround)
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -sL --max-time 300 -o sqlite-amalgamation-3530200.zip https://sqlite.org/2026/sqlite-amalgamation-3530200.zip
+          New-Item sqlite-amalg -ItemType Directory -Force | Out-Null
+          tar -xf sqlite-amalgamation-3530200.zip -C sqlite-amalg --strip-components=1
+          zig fetch "${{ github.workspace }}\sqlite-amalg" | Out-Host
       - name: Build lightpanda native windows (V8 from source, ~1-1.5h)
         shell: cmd
         run: |
