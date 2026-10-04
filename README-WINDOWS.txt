@@ -1,8 +1,12 @@
-﻿Lightpanda Browser - Windows 原生版 (lightpanda-portable-windows-x64)
+Lightpanda Browser - Windows 原生版 (lightpanda-portable-windows-x64)
 =====================================================================
 
 这是 lightpanda-io/browser 开源项目 (https://github.com/lightpanda-io/browser)
-的 Windows x64 原生移植版。上游官方仅支持 Linux/macOS，本移植版由社区补丁构建。
+的 Windows x64 原生移植版。上游官方仅支持 Linux/macOS。
+
+本移植版源码（补丁序列与 CI）：https://github.com/qidiai/lightpanda-windows-port
+上游项目：https://github.com/lightpanda-io/browser（AGPL-3.0，本包遵循同一协议分发）
+上游官方仅支持 Linux/macOS，本移植版由社区补丁构建。
 
 版本: 1.1.0-dev.3 (对应上游 main 2026-10-02 快照, V8 15.5.35.13)
 协议: AGPL-3.0（源码补丁见同仓库 win-port/ 目录与 git 历史）
