@@ -602,10 +602,7 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
         std.debug.panic("walk src/rust: {t}", .{err});
     };
 
-    // Cargo reports progress on stderr; left uncaptured, Zig prints it as a
-    // "failed command: ..." diagnostic on a successful build. A non-zero exit
-    // still surfaces the captured output.
-    _ = exec_cargo.captureStdErr(.{});
+    // WIN-PORT: cargo stderr printed live (CI diagnostics for the ffi lib).
 
     // WIN-PORT: use cargo's default target dir (workspace root). The
     // previous addPrefixedOutputDirectoryArg("rust") scheme let zig's step
