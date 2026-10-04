@@ -147,7 +147,7 @@ pub fn build(b: *Build) !void {
     const v8_for_link = if (orderfile != null and v8_archive != null and !shared_v8) markHotSections(b, v8_archive.?) else v8_archive;
     linkV8(b, lightpanda_module, enable_asan, enable_tsan, v8_for_link, shared_v8);
     linkCurl(b, lightpanda_module, deps, enable_tsan, orderfile != null);
-    linkRust(b, lightpanda_module, deps);
+    const rust_cargo = linkRust(b, lightpanda_module, deps);
     linkZenai(b, lightpanda_module);
     linkIsocline(b, lightpanda_module);
     linkSqlite(b, lightpanda_module, deps, enable_csan, enable_tsan, orderfile != null);
@@ -181,6 +181,9 @@ pub fn build(b: *Build) !void {
     {
         // browser
         const exe = addExe(b, exe_config, "lightpanda", "lightpanda_exe_check", "src/main.zig");
+
+        // WIN-PORT: cargo must finish before the first link on a fresh tree.
+        exe.step.dependOn(&rust_cargo.step);
         b.installArtifact(exe);
 
         const run_cmd = b.addRunArtifact(exe);
@@ -584,7 +587,7 @@ fn linkV8(
     mod.addImport("v8", dep.module("v8"));
 }
 
-fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) void {
+fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     // Cargo's "dev" profile writes to target/debug.
     const profile, const out_subdir = if (deps.optimize == .Debug) .{ "dev", "debug" } else .{ "release", "release" };
 
@@ -604,14 +607,19 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) void {
     // still surfaces the captured output.
     _ = exec_cargo.captureStdErr(.{});
 
-    // TODO: We can prefer `--artifact-dir` once it become stable.
-    const out_dir = exec_cargo.addPrefixedOutputDirectoryArg("--target-dir=", "rust");
+    // WIN-PORT: use cargo's default target dir (workspace root). The
+    // previous addPrefixedOutputDirectoryArg("rust") scheme let zig's step
+    // cache skip cargo while the declared output dir was missing, which
+    // broke fresh-clone links with "liblightpanda_ffi.a: file not found".
 
     const rust_step = b.step("rust", "Build the Rust staticlib (requires cargo)");
     rust_step.dependOn(&exec_cargo.step);
 
-    const obj = out_dir.path(b, out_subdir).path(b, "liblightpanda_ffi.a");
+    const obj = Build.LazyPath{ .cwd_relative = b.fmt("src/rust/target/{s}/liblightpanda_ffi.a", .{out_subdir}) };
     mod.addObjectFile(obj);
+    // WIN-PORT: the generated-dir LazyPath does not by itself order the
+    // cargo run before the consuming compile step on a fresh tree.
+    return exec_cargo;
 }
 
 /// Registers every file under `root` (relative to the build root) as an
