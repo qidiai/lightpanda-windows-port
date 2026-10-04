@@ -621,16 +621,19 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     // WIN-PORT: the msvc host toolchain names the staticlib
     // `lightpanda_ffi.lib`, the gnu one `liblightpanda_ffi.a` -- normalize
     // to the canonical name so the link path is toolchain-agnostic.
-    const norm_ffi = b.addSystemCommand(&.{
-        "cmd",                                                                "/c",
-        "if",                                                                 "not",
-        "exist",                                                              b.fmt("{s}\\{s}\\liblightpanda_ffi.a", .{ rust_target, out_subdir }),
-        "if",                                                                 "exist",
-        b.fmt("{s}\\{s}\\lightpanda_ffi.lib", .{ rust_target, out_subdir }),  "copy",
-        "/y",                                                                 b.fmt("{s}\\{s}\\lightpanda_ffi.lib", .{ rust_target, out_subdir }),
-        b.fmt("{s}\\{s}\\liblightpanda_ffi.a", .{ rust_target, out_subdir }),
-    });
-    norm_ffi.step.dependOn(&exec_cargo.step);
+    var norm_ffi: ?*Build.Step.Run = null;
+    if (builtin.os.tag == .windows) {
+        norm_ffi = b.addSystemCommand(&.{
+            "cmd",                                                                "/c",
+            "if",                                                                 "not",
+            "exist",                                                              b.fmt("{s}\\{s}\\liblightpanda_ffi.a", .{ rust_target, out_subdir }),
+            "if",                                                                 "exist",
+            b.fmt("{s}\\{s}\\lightpanda_ffi.lib", .{ rust_target, out_subdir }),  "copy",
+            "/y",                                                                 b.fmt("{s}\\{s}\\lightpanda_ffi.lib", .{ rust_target, out_subdir }),
+            b.fmt("{s}\\{s}\\liblightpanda_ffi.a", .{ rust_target, out_subdir }),
+        });
+        if (norm_ffi) |nf| nf.step.dependOn(&exec_cargo.step);
+    } // end windows-only normalize
 
     const rust_step = b.step("rust", "Build the Rust staticlib (requires cargo)");
     rust_step.dependOn(&exec_cargo.step);
@@ -639,7 +642,7 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     mod.addObjectFile(obj);
     // WIN-PORT: the generated-dir LazyPath does not by itself order the
     // cargo run before the consuming compile step on a fresh tree.
-    return norm_ffi;
+    return norm_ffi orelse exec_cargo;
 }
 
 /// Registers every file under `root` (relative to the build root) as an
