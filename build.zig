@@ -597,6 +597,12 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
         "--profile",       profile,
         "--manifest-path", "src/rust/ffi/Cargo.toml",
     });
+    // WIN-PORT: force the gnu target on windows -- the msvc-host rust
+    // emits compiler_builtins weak symbols that clash with zig compiler_rt
+    // at link time; the gnu target matches the local (working) setup.
+    if (builtin.os.tag == .windows) {
+        exec_cargo.addArgs(&.{ "--target", "x86_64-pc-windows-gnu" });
+    }
 
     addDirInputs(b, exec_cargo, "src/rust", "target") catch |err| {
         std.debug.panic("walk src/rust: {t}", .{err});
@@ -613,20 +619,20 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     // `lightpanda_ffi.lib`, the gnu one `liblightpanda_ffi.a` -- normalize
     // to the canonical name so the link path is toolchain-agnostic.
     const norm_ffi = b.addSystemCommand(&.{
-        "cmd",                                                               "/c",
-        "if",                                                                "not",
-        "exist",                                                             b.fmt("src\\rust\\target\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
-        "if",                                                                "exist",
-        b.fmt("src\\rust\\target\\{s}\\lightpanda_ffi.lib", .{out_subdir}),  "copy",
-        "/y",                                                                b.fmt("src\\rust\\target\\{s}\\lightpanda_ffi.lib", .{out_subdir}),
-        b.fmt("src\\rust\\target\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
+        "cmd",                                                                                      "/c",
+        "if",                                                                                       "not",
+        "exist",                                                                                    b.fmt("src\\rust\\target\\x86_64-pc-windows-gnu\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
+        "if",                                                                                       "exist",
+        b.fmt("src\\rust\\target\\x86_64-pc-windows-gnu\\{s}\\lightpanda_ffi.lib", .{out_subdir}),  "copy",
+        "/y",                                                                                       b.fmt("src\\rust\\target\\x86_64-pc-windows-gnu\\{s}\\lightpanda_ffi.lib", .{out_subdir}),
+        b.fmt("src\\rust\\target\\x86_64-pc-windows-gnu\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
     });
     norm_ffi.step.dependOn(&exec_cargo.step);
 
     const rust_step = b.step("rust", "Build the Rust staticlib (requires cargo)");
     rust_step.dependOn(&exec_cargo.step);
 
-    const obj = Build.LazyPath{ .cwd_relative = b.fmt("src/rust/target/{s}/liblightpanda_ffi.a", .{out_subdir}) };
+    const obj = Build.LazyPath{ .cwd_relative = b.fmt("src/rust/target/x86_64-pc-windows-gnu/{s}/liblightpanda_ffi.a", .{out_subdir}) };
     mod.addObjectFile(obj);
     // WIN-PORT: the generated-dir LazyPath does not by itself order the
     // cargo run before the consuming compile step on a fresh tree.
