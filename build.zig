@@ -160,7 +160,7 @@ pub fn build(b: *Build) !void {
         .name = "lightpanda_check",
         .root_module = lightpanda_module,
     });
-    check_lib.step.dependOn(rust_cargo);
+    check_lib.step.dependOn(&rust_cargo.step);
     check.dependOn(&check_lib.step);
 
     // Extras (snapshot_creator) are off the default install to
@@ -235,7 +235,7 @@ pub fn build(b: *Build) !void {
             .use_llvm = use_llvm,
             .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
         });
-        tests.step.dependOn(rust_cargo);
+        tests.step.dependOn(&rust_cargo.step);
         const run_tests = b.addRunArtifact(tests);
         const test_step = b.step("test", "Run unit tests");
         test_step.dependOn(&run_tests.step);
