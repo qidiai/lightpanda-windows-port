@@ -609,6 +609,20 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     // cache skip cargo while the declared output dir was missing, which
     // broke fresh-clone links with "liblightpanda_ffi.a: file not found".
 
+    // WIN-PORT: the msvc host toolchain names the staticlib
+    // `lightpanda_ffi.lib`, the gnu one `liblightpanda_ffi.a` -- normalize
+    // to the canonical name so the link path is toolchain-agnostic.
+    const norm_ffi = b.addSystemCommand(&.{
+        "cmd",                                                               "/c",
+        "if",                                                                "not",
+        "exist",                                                             b.fmt("src\\rust\\target\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
+        "if",                                                                "exist",
+        b.fmt("src\\rust\\target\\{s}\\lightpanda_ffi.lib", .{out_subdir}),  "copy",
+        "/y",                                                                b.fmt("src\\rust\\target\\{s}\\lightpanda_ffi.lib", .{out_subdir}),
+        b.fmt("src\\rust\\target\\{s}\\liblightpanda_ffi.a", .{out_subdir}),
+    });
+    norm_ffi.step.dependOn(&exec_cargo.step);
+
     const rust_step = b.step("rust", "Build the Rust staticlib (requires cargo)");
     rust_step.dependOn(&exec_cargo.step);
 
@@ -616,7 +630,7 @@ fn linkRust(b: *Build, mod: *Build.Module, deps: Deps) *Build.Step.Run {
     mod.addObjectFile(obj);
     // WIN-PORT: the generated-dir LazyPath does not by itself order the
     // cargo run before the consuming compile step on a fresh tree.
-    return exec_cargo;
+    return norm_ffi;
 }
 
 /// Registers every file under `root` (relative to the build root) as an
